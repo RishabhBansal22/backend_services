@@ -6,3 +6,5 @@ SQLAlchemy
 bcrypt>=4.0.0
 passlib[bcrypt]
 python-jose[cryptography]
+pytest>=7.0.0
+pytest-cov

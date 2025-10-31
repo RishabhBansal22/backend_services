@@ -31,11 +31,29 @@ jobs:
         uv sync
     
     - name: Run tests with pytest
+      env:
+        JWT_SECRET_KEY: test-secret-key-for-ci-testing-only-not-for-production
+        ACCESS_TOKEN_EXPIRE_MINUTES: 30
+        DRIVER: mysqlconnector
+        HOST: localhost
+        PORT: 3306
+        USER: testuser
+        PASSWORD: testpass
+        DATABASE: testdb
       run: |
         uv run pytest auth/tests/ -v --cov=auth --cov-report=term-missing
     
     - name: Generate coverage report
       if: success()
+      env:
+        JWT_SECRET_KEY: test-secret-key-for-ci-testing-only-not-for-production
+        ACCESS_TOKEN_EXPIRE_MINUTES: 30
+        DRIVER: mysqlconnector
+        HOST: localhost
+        PORT: 3306
+        USER: testuser
+        PASSWORD: testpass
+        DATABASE: testdb
       run: |
         uv run pytest auth/tests/ --cov=auth --cov-report=xml
     

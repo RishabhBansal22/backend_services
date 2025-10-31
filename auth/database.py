@@ -1,8 +1,7 @@
-from config import settings, db_url_str
+from config import db_url_str
 from sqlalchemy import create_engine, Column, String, Integer, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
-from datetime import datetime
-import uuid
+
 
 try:
     engine = create_engine(db_url_str,echo=True)

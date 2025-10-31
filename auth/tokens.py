@@ -25,22 +25,56 @@ def varify_password(raw_pass:str, hash_pass:str) -> bool:
 
 
 def user_registration(first_name:str,email:str, password:str,last_name:str=None):
-    if find_user_by_email(email):
-        return {
-            "warning":"user already exists, please login instead"
-        }
-    else:
-        user_id = uuid.uuid4()
-        password = hash_password(password)
-        user = Users(
-            id=str(user_id),first_name=first_name,last_name=last_name,email=email,password=password,
-            created_at=datetime.now()
-            )
-        print(f"adding user {user.first_name}")
-        with Session() as session:
+    # Normalize email to lowercase
+    email = email.lower().strip()
+    
+    user_id = str(uuid.uuid4())
+    hashed_password = hash_password(password)
+    created_time = datetime.utcnow()
+    
+    user = Users(
+        id=user_id,
+        first_name=first_name.strip(),
+        last_name=last_name.strip() if last_name else None,
+        email=email,
+        password=hashed_password,
+        created_at=created_time
+    )
+    
+    with Session() as session:
+        try:
+            existing_user = session.query(Users).filter_by(email=email).first()
+            if existing_user:
+                return {
+                    "error": "Registration failed",
+                    "status_code": 409
+                }
+            
             session.add(user)
             session.commit()
-            print(f"{first_name} with {email} has been added to db")
+            
+            # Return the user data directly without another DB query
+            return {
+                "new_user": {
+                    "user_id": user_id,
+                    "name": first_name + (" " + last_name if last_name else ""),
+                    "email": email,
+                    "created_at": created_time.isoformat()
+                },
+                "status_code": 201
+            }
+        except Exception as e:
+            session.rollback()
+            # Check if it's a unique or duplicate entry constraint violation
+            if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                return {
+                    "error": "Registration failed",
+                    "status_code": 409
+                }
+            return {
+                "error": f"An error occurred during registration",
+                "status_code": 500
+            }
     
 
 def user_login(email:str,password:str):
@@ -108,9 +142,13 @@ def get_referesh_token(user_id:str):
             return e
 
 def find_user_by_email(email:str) -> dict:
+    session = Session()
     try:
-        session = Session()
-        user_data_obj = session.query(Users).filter_by(email=email).first()
+        # Normalize email to lowercase for case-insensitive comparison
+        user_data_obj = session.query(Users).filter_by(email=email.lower()).first()
+        
+        if user_data_obj is None:
+            return None
 
         user_data = {
             "user_id":user_data_obj.id,
@@ -122,7 +160,8 @@ def find_user_by_email(email:str) -> dict:
         }
         return user_data
     except Exception as e:
-        print(e)
+        print(f"Error in find_user_by_email: {e}")
+        return None
     finally:
         session.close()
 

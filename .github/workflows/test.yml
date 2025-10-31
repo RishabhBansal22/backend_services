@@ -1,0 +1,65 @@
+name: Run Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    
+    - name: Install uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+    
+    - name: Install dependencies
+      run: |
+        uv sync
+    
+    - name: Run tests with pytest
+      env:
+        JWT_SECRET_KEY: test-secret-key-for-ci-testing-only-not-for-production
+        ACCESS_TOKEN_EXPIRE_MINUTES: 30
+        DRIVER: mysqlconnector
+        HOST: localhost
+        PORT: 3306
+        USER: testuser
+        PASSWORD: testpass
+        DATABASE: testdb
+      run: |
+        uv run pytest auth/tests/ -v --cov=auth --cov-report=term-missing
+    
+    - name: Generate coverage report
+      if: success()
+      env:
+        JWT_SECRET_KEY: test-secret-key-for-ci-testing-only-not-for-production
+        ACCESS_TOKEN_EXPIRE_MINUTES: 30
+        DRIVER: mysqlconnector
+        HOST: localhost
+        PORT: 3306
+        USER: testuser
+        PASSWORD: testpass
+        DATABASE: testdb
+      run: |
+        uv run pytest auth/tests/ --cov=auth --cov-report=xml
+    
+    - name: Upload coverage to artifacts
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage.xml

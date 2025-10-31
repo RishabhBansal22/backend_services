@@ -1,5 +1,7 @@
 # Microservices Tutorial
 
+[![Run Tests](https://github.com/RishabhBansal22/backend_services/actions/workflows/test.yml/badge.svg)](https://github.com/RishabhBansal22/backend_services/actions/workflows/test.yml)
+
 A hands-on learning project for backend microservices development using Python and FastAPI.
 
 ## 📚 Overview
@@ -102,8 +104,19 @@ Content-Type: application/json
 
 Run tests using:
 ```bash
-pytest auth/tests/
+# Run all tests
+pytest auth/tests/ -v
+
+# Run with coverage
+pytest auth/tests/ --cov=auth --cov-report=term-missing
 ```
+
+### Continuous Integration
+Tests automatically run on:
+- Every push to `main` branch
+- All pull requests targeting `main`
+
+View test results in the [Actions tab](https://github.com/RishabhBansal22/backend_services/actions)
 
 ## 📖 Learning Goals
 

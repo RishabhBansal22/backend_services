@@ -1,0 +1,8 @@
+fastapi[standard]
+pydantic
+python-dotenv
+mysql-connector-python
+SQLAlchemy
+bcrypt>=4.0.0
+passlib[bcrypt]
+python-jose[cryptography]

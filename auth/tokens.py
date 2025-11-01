@@ -25,8 +25,12 @@ def varify_password(raw_pass:str, hash_pass:str) -> bool:
 
 
 def user_registration(first_name:str,email:str, password:str,last_name:str=None):
-    # Normalize email to lowercase
+    # Normalize email to lowercase and strip whitespace
     email = email.lower().strip()
+    
+    # Strip whitespace from names
+    first_name = first_name.strip()
+    last_name = last_name.strip() if last_name else None
     
     user_id = str(uuid.uuid4())
     hashed_password = hash_password(password)
@@ -34,8 +38,8 @@ def user_registration(first_name:str,email:str, password:str,last_name:str=None)
     
     user = Users(
         id=user_id,
-        first_name=first_name.strip(),
-        last_name=last_name.strip() if last_name else None,
+        first_name=first_name,
+        last_name=last_name,
         email=email,
         password=hashed_password,
         created_at=created_time
@@ -222,12 +226,38 @@ def get_referesh_token(user_id:str):
                 return ref_token
         except Exception as e:
             return e
+        
+def delete_refresh_token(refresh_token):
+    "delete refresh token row in case of logout"
+    with Session() as session:
+        try:
+            token_entry = session.query(RefreshToken).filter_by(refresh_token=refresh_token).first()
+            if token_entry:
+                session.delete(token_entry)
+                session.commit()
+                return {
+                    "status_code": 200,
+                    "message": "Token deleted successfully"
+                }
+            else:
+                return {
+                    "status_code": 404,
+                    "message": "Token not found"
+                }
+        except Exception as e:
+            session.rollback()
+            print(f"Error deleting refresh token: {e}")
+            return {
+                "status_code": 500,
+                "message": "Failed to delete token"
+            }
+
 
 def find_user_by_email(email:str) -> dict:
     session = Session()
     try:
-        # Normalize email to lowercase for case-insensitive comparison
-        user_data_obj = session.query(Users).filter_by(email=email.lower()).first()
+        # Normalize email to lowercase and strip whitespace for case-insensitive comparison
+        user_data_obj = session.query(Users).filter_by(email=email.lower().strip()).first()
         
         if user_data_obj is None:
             return None

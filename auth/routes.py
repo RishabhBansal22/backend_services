@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
+from fastapi import FastAPI, HTTPException, Cookie, Request
+from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
-from tokens import user_registration, user_login
+from tokens import user_registration, user_login, decode_token, JWTError, create_access_token, get_referesh_token
 from config import settings
+from datetime import datetime, timedelta
 
 app = FastAPI()
 
@@ -17,6 +18,9 @@ class Login(BaseModel):
     email : EmailStr = Field(...)
     password : str = Field(...)
     remember_me : Optional[bool] = True
+
+class RefreshToken(BaseModel):
+    refresh_token : Optional[str] = None
 
 
 @app.post("/register", status_code=201)
@@ -87,3 +91,91 @@ def login(response:Response,user:Login):
             "type":"bearer",
             "expires_in":expires_in
         }
+
+
+@app.post("/refresh")
+async def refresh_token(response: Response, request: Request):
+    
+    # Get refresh token from cookie first
+    refresh_token = request.cookies.get("refresh_token")
+    
+    # If not in cookie, try to parse from request body
+    if not refresh_token:
+        try:
+            # Parse body as RefreshToken model for validation
+            body = await request.json()
+            token_data = RefreshToken(**body)
+            refresh_token = token_data.refresh_token
+        except Exception:
+            pass  # Body parsing/validation failed, token remains None
+    
+    if not refresh_token:
+        raise HTTPException(
+            status_code=400, 
+            detail="Refresh token must be provided in cookie or request body"
+        )
+    
+    # Token verification
+    try:
+        payload: dict = decode_token(token=refresh_token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Invalid refresh token")
+        
+        # Get user_id from "sub" field (not "user_id")
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        
+        # Verify token type
+        token_type = payload.get("type")
+        if token_type != "refresh_token":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        
+        # Check expiration (exp is Unix timestamp)
+        exp: int = payload.get("exp")
+        if not exp or exp < datetime.utcnow().timestamp():
+            raise HTTPException(status_code=401, detail="Refresh token expired")
+        
+        # Validate refresh token against database (for revocation/logout support)
+        db_token = get_referesh_token(user_id=user_id)
+        if not db_token or db_token.refresh_token != refresh_token:
+            raise HTTPException(status_code=401, detail="Refresh token not found or revoked")
+        
+        # Create new access token
+        access_token, expire_time = create_access_token(user_id=user_id)
+        if not access_token:
+            raise HTTPException(status_code=500, detail="Failed to create access token")
+        
+        # Calculate expires_in seconds
+        expires_in = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        
+        json_content = {
+            "access_token": access_token,
+            "type": "bearer",
+            "expires_in": expires_in
+        }
+        
+        # If refresh token came from cookie, set access token in cookie too
+        if request.cookies.get("refresh_token"):
+            json_response = JSONResponse(content=json_content)
+            json_response.set_cookie(
+                key="access_token",
+                value=access_token,
+                max_age=expires_in,
+                httponly=True,
+                samesite="lax",
+                secure=False  # Set to True in production
+            )
+            return json_response
+        else:
+            return JSONResponse(content=json_content)
+    
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    except Exception as e:
+        print(f"Error in refresh endpoint: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+

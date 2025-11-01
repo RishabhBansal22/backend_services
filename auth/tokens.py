@@ -164,6 +164,21 @@ def create_token(data:dict, expires_delta:timedelta):
         print(f"Error creating token: {e}")
         return None
     
+
+def create_access_token(user_id:str):
+    user = find_user_by_id(user_id)
+    user_email = user.get("email")
+    time_delta = timedelta(minutes=TOKEN_TIMEOUT)
+    access_token, expire_time = create_token(
+        {
+            "sub":user_id,
+            "email":user_email
+        },
+        expires_delta=time_delta
+
+    )
+    return access_token, expire_time
+    
 def decode_token(token:str):
     try:
         payload = jwt.decode(token,JWT_SECRET,algorithms=[ALGORITHM])

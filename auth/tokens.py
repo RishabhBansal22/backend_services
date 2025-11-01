@@ -45,10 +45,12 @@ def user_registration(first_name:str,email:str, password:str,last_name:str=None)
         try:
             existing_user = session.query(Users).filter_by(email=email).first()
             if existing_user:
+                print("user already exists")
                 return {
                     "error": "Registration failed",
                     "status_code": 409
                 }
+            
             
             session.add(user)
             session.commit()
@@ -78,20 +80,74 @@ def user_registration(first_name:str,email:str, password:str,last_name:str=None)
     
 
 def user_login(email:str,password:str):
-    user_data = find_user_by_email(email)
-    if user_data:
-        verify = varify_password(raw_pass=password, hash_pass=user_data["hashed_pass"])
-        if verify:
+    try:
+        # Normalize email
+        email = email.lower().strip()
+        
+        user_data = find_user_by_email(email)
+        if not user_data:
             return {
-                "status":f"verification successfull, welcome {user_data['first_name']}"
+                "error": "Invalid email or password",
+                "status_code": 401
             }
-        else:
-            return{
-                "status":"401"
+        
+        # Verify password
+        verify = varify_password(raw_pass=password, hash_pass=user_data["hashed_pass"])
+        if not verify:
+            return {
+                "error": "Invalid email or password",
+                "status_code": 401
             }
-    else:
+        
+        # Create access token
+        access_token_result = create_token({
+            "sub": user_data["user_id"],
+            "email": user_data["email"]
+        },
+        expires_delta=timedelta(minutes=TOKEN_TIMEOUT))
+        
+        # Check if token creation failed
+        if access_token_result == JWTError or not isinstance(access_token_result, tuple):
+            return {
+                "error": "Failed to create access token",
+                "status_code": 500
+            }
+        
+        access_token, access_exp = access_token_result
+
+        # Create refresh token
+        refresh_token_result = create_token(
+            {
+                "sub": user_data["user_id"],
+                "type": "refresh_token"
+            },
+            expires_delta=timedelta(days=REFRESH_TOKEN_TIMEOUT)
+        )
+        
+        # Check if token creation failed
+        if refresh_token_result == JWTError or not isinstance(refresh_token_result, tuple):
+            return {
+                "error": "Failed to create refresh token",
+                "status_code": 500
+            }
+        
+        refresh_token, refresh_exp = refresh_token_result
+        
+        # Save refresh token to database
+        save_result = save_refresh_token(user_id=user_data["user_id"], referesh_token=refresh_token)
+        if save_result and isinstance(save_result, Exception):
+            return {
+                "error": "Failed to save refresh token",
+                "status_code": 500
+            }
+
+        return (access_token, access_exp), (refresh_token, refresh_exp)
+    
+    except Exception as e:
+        print(f"Error in user_login: {e}")
         return {
-            "error":"no user found"
+            "error": "An unexpected error occurred during login",
+            "status_code": 500
         }
     
 def create_token(data:dict, expires_delta:timedelta):
@@ -104,32 +160,43 @@ def create_token(data:dict, expires_delta:timedelta):
     try:
         access_token = jwt.encode(to_encode,key=JWT_SECRET,algorithm=ALGORITHM)
         return access_token, expire_time
-    except:
-        return JWTError
+    except Exception as e:
+        print(f"Error creating token: {e}")
+        return None
     
 def decode_token(token:str):
     try:
-        payload = jwt.decode(token,JWT_SECRET,ALGORITHM)
+        payload = jwt.decode(token,JWT_SECRET,algorithms=[ALGORITHM])
         return payload
-    except JWTError:
-        return JWTError
+    except JWTError as e:
+        print(f"Error decoding token: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error decoding token: {e}")
+        return None
     
 def save_refresh_token(user_id:str,referesh_token:str):
     with Session() as session:
         try:
             existing_token = session.query(RefreshToken).filter_by(user_id=user_id).first()
-            if existing_token.refresh_token:
+            if existing_token:
+                # Update existing token
                 existing_token.refresh_token = referesh_token
                 existing_token.created_at = datetime.utcnow()
             else:
+                # Create new token
                 new_token = RefreshToken(
                     user_id=user_id,
                     refresh_token=referesh_token,
                     created_at = datetime.utcnow()
                 )
                 session.add(new_token)
-                session.commit()
+            
+            session.commit()
+            return None  # Success
         except Exception as e:
+            session.rollback()
+            print(f"Error saving refresh token: {e}")
             return e
 
 def get_referesh_token(user_id:str):

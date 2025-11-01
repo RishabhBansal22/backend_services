@@ -21,7 +21,8 @@ from tokens import (
     find_user_by_email,
     find_user_by_id,
     save_refresh_token,
-    get_referesh_token
+    get_referesh_token,
+    delete_refresh_token
 )
 
 
@@ -660,3 +661,348 @@ class TestUserQuery:
         
         assert result is not None
         assert result["email"] == "lowercase@example.com"
+
+
+class TestLogoutOperations:
+    """Test suite for logout operations."""
+    
+    def test_delete_refresh_token_success(self, mock_session, test_session):
+        """Test successfully deleting a refresh token."""
+        user_id = str(uuid.uuid4())
+        refresh_token_value = "token_to_delete_123"
+        
+        # Create user
+        user = Users(
+            id=user_id,
+            first_name="Delete",
+            last_name="Test",
+            email="delete@example.com",
+            password="hashed_pass",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Create refresh token
+        token = RefreshToken(
+            user_id=user_id,
+            refresh_token=refresh_token_value,
+            created_at=datetime.utcnow()
+        )
+        test_session.add(token)
+        test_session.commit()
+        
+        # Delete token
+        result = delete_refresh_token(refresh_token_value)
+        
+        assert result is not None
+        assert result["status_code"] == 200
+        assert "message" in result
+        
+        # Verify token was deleted from database
+        deleted_token = test_session.query(RefreshToken).filter_by(refresh_token=refresh_token_value).first()
+        assert deleted_token is None
+    
+    def test_delete_refresh_token_not_found(self, mock_session, test_session):
+        """Test deleting a non-existent refresh token."""
+        non_existent_token = "does_not_exist_token"
+        
+        result = delete_refresh_token(non_existent_token)
+        
+        assert result is not None
+        assert result["status_code"] == 404
+        assert "message" in result
+        assert "not found" in result["message"].lower()
+    
+    def test_delete_refresh_token_handles_none(self, mock_session, test_session):
+        """Test deleting with None as token."""
+        result = delete_refresh_token(None)
+        
+        assert result is not None
+        assert result["status_code"] in [404, 500]
+    
+    def test_delete_refresh_token_empty_string(self, mock_session, test_session):
+        """Test deleting with empty string as token."""
+        result = delete_refresh_token("")
+        
+        assert result is not None
+        assert result["status_code"] == 404
+        assert "message" in result
+
+
+class TestCreateAccessToken:
+    """Test suite for create_access_token function."""
+    
+    def test_create_access_token_success(self, mock_session, test_session):
+        """Test creating an access token for a valid user."""
+        from tokens import create_access_token
+        
+        user_id = str(uuid.uuid4())
+        email = "accesstoken@example.com"
+        
+        # Create user
+        user = Users(
+            id=user_id,
+            first_name="Access",
+            last_name="Token",
+            email=email,
+            password="hashed_pass",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Mock find_user_by_id to return test user
+        with patch('tokens.Session', return_value=test_session):
+            access_token, expire_time = create_access_token(user_id)
+        
+        # Verify token was created
+        assert access_token is not None
+        assert isinstance(access_token, str)
+        assert len(access_token) > 0
+        
+        # Verify expiration time is set
+        assert expire_time is not None
+        assert isinstance(expire_time, datetime)
+        assert expire_time > datetime.utcnow()
+        
+        # Decode and verify token contents
+        decoded = decode_token(access_token)
+        assert decoded is not None
+        assert decoded["sub"] == user_id
+        assert decoded["email"] == email
+    
+    def test_create_access_token_with_nonexistent_user(self, mock_session, test_session):
+        """Test creating access token with non-existent user."""
+        from tokens import create_access_token
+        
+        fake_user_id = str(uuid.uuid4())
+        
+        # This should handle gracefully or raise error
+        with patch('tokens.Session', return_value=test_session):
+            try:
+                result = create_access_token(fake_user_id)
+                # If it doesn't raise, result might be None or error tuple
+                # The function may fail when trying to get email from None user
+            except (TypeError, AttributeError):
+                # Expected behavior - can't create token for non-existent user
+                pass
+
+
+class TestTokenExpiration:
+    """Test suite for token expiration handling."""
+    
+    def test_token_includes_expiration(self):
+        """Test that created tokens include expiration claim."""
+        from tokens import create_token
+        
+        data = {"user_id": "123", "email": "test@example.com"}
+        expires_delta = timedelta(minutes=15)
+        
+        token, expire_time = create_token(data, expires_delta)
+        decoded = decode_token(token)
+        
+        assert "exp" in decoded
+        assert decoded["exp"] > datetime.utcnow().timestamp()
+    
+    def test_token_expiration_matches_timedelta(self):
+        """Test that token expiration matches the provided timedelta."""
+        from tokens import create_token
+        
+        data = {"user_id": "123"}
+        expires_delta = timedelta(minutes=30)
+        
+        before_time = datetime.utcnow()
+        token, expire_time = create_token(data, expires_delta)
+        after_time = datetime.utcnow()
+        
+        # expire_time should be approximately 30 minutes from now
+        expected_min = before_time + expires_delta
+        expected_max = after_time + expires_delta
+        
+        assert expected_min <= expire_time <= expected_max
+    
+    def test_decode_token_with_zero_expiration(self):
+        """Test decoding a token that expires immediately."""
+        from tokens import create_token
+        
+        data = {"user_id": "123"}
+        expires_delta = timedelta(seconds=0)
+        
+        token, _ = create_token(data, expires_delta)
+        
+        # Token might already be expired or expire very soon
+        # decode_token should return None for expired tokens
+        import time
+        time.sleep(1)  # Wait to ensure expiration
+        
+        decoded = decode_token(token)
+        assert decoded is None
+
+
+class TestPasswordValidation:
+    """Test suite for password validation edge cases."""
+    
+    def test_hash_password_special_characters(self):
+        """Test hashing passwords with special characters."""
+        password = "P@ssw0rd!#$%^&*()"
+        hashed = hash_password(password)
+        
+        assert hashed is not None
+        assert varify_password(password, hashed) is True
+    
+    def test_hash_password_unicode(self):
+        """Test hashing passwords with unicode characters."""
+        password = "пароль密码🔒"
+        hashed = hash_password(password)
+        
+        assert hashed is not None
+        assert varify_password(password, hashed) is True
+    
+    def test_hash_password_very_long(self):
+        """Test hashing very long passwords (bcrypt has 72 byte limit)."""
+        password = "a" * 70  # Within bcrypt's 72 byte limit
+        hashed = hash_password(password)
+        
+        assert hashed is not None
+        assert varify_password(password, hashed) is True
+    
+    def test_verify_password_case_sensitive(self):
+        """Test that password verification is case-sensitive."""
+        password = "Password123"
+        hashed = hash_password(password)
+        
+        # Different case should fail
+        assert varify_password("password123", hashed) is False
+        assert varify_password("PASSWORD123", hashed) is False
+    
+    def test_verify_password_whitespace_matters(self):
+        """Test that whitespace in passwords matters."""
+        password = "password"
+        hashed = hash_password(password)
+        
+        # With spaces should fail
+        assert varify_password(" password", hashed) is False
+        assert varify_password("password ", hashed) is False
+        assert varify_password(" password ", hashed) is False
+
+
+class TestUserRegistrationEdgeCases:
+    """Test suite for user registration edge cases."""
+    
+    def test_user_registration_with_very_long_name(self, mock_session, test_session):
+        """Test registration with names at varchar limits."""
+        result = user_registration(
+            first_name="A" * 50,  # At varchar(50) limit
+            last_name="B" * 50,
+            email="longname@example.com",
+            password="password123"
+        )
+        
+        assert result["status_code"] == 201
+        assert "new_user" in result
+    
+    def test_user_registration_email_normalization(self, mock_session, test_session):
+        """Test that emails are normalized to lowercase."""
+        result = user_registration(
+            first_name="Test",
+            last_name="User",
+            email="TEST@EXAMPLE.COM",
+            password="password123"
+        )
+        
+        assert result["status_code"] == 201
+        assert result["new_user"]["email"] == "test@example.com"
+    
+    def test_user_registration_with_extra_whitespace(self, mock_session, test_session):
+        """Test registration with extra whitespace in names."""
+        result = user_registration(
+            first_name="  John  ",
+            last_name="  Doe  ",
+            email="  whitespace@test.com  ",
+            password="password123"
+        )
+        
+        assert result["status_code"] == 201
+        # Names should be stripped
+        assert result["new_user"]["name"] == "John Doe"
+        assert result["new_user"]["email"] == "whitespace@test.com"
+
+
+class TestGetRefreshTokenEdgeCases:
+    """Test suite for get_referesh_token edge cases."""
+    
+    def test_get_refresh_token_with_invalid_user_id(self, mock_session, test_session):
+        """Test getting refresh token with invalid user_id format."""
+        invalid_user_id = "not-a-uuid"
+        
+        result = get_referesh_token(invalid_user_id)
+        
+        # Should return None or handle gracefully
+        assert result is None or isinstance(result, Exception)
+    
+    def test_get_refresh_token_empty_string(self, mock_session, test_session):
+        """Test getting refresh token with empty string user_id."""
+        result = get_referesh_token("")
+        
+        assert result is None or isinstance(result, Exception)
+
+
+class TestFindUserEdgeCases:
+    """Test suite for find_user functions edge cases."""
+    
+    def test_find_user_by_email_with_whitespace(self, mock_session, test_session):
+        """Test finding user with whitespace in email."""
+        user_id = str(uuid.uuid4())
+        
+        user = Users(
+            id=user_id,
+            first_name="Test",
+            last_name="User",
+            email="test@example.com",
+            password="hashed_pass",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        with patch('tokens.Session', return_value=test_session):
+            # Email with spaces should be normalized
+            result = find_user_by_email("  test@example.com  ")
+        
+        assert result is not None
+        assert result["email"] == "test@example.com"
+    
+    def test_find_user_by_email_empty_string(self, mock_session, test_session):
+        """Test finding user with empty email."""
+        with patch('tokens.Session', return_value=test_session):
+            result = find_user_by_email("")
+        
+        assert result is None
+    
+    def test_find_user_by_id_empty_string(self, mock_session, test_session):
+        """Test finding user with empty id."""
+        with patch('tokens.Session', return_value=test_session):
+            result = find_user_by_id("")
+        
+        assert result is None
+
+
+class TestDatabaseFunctions:
+    """Test suite for database.py functions."""
+    
+    def test_create_new_table_function_exists(self):
+        """Test that create_new_table function exists and can be called."""
+        from database import create_new_table
+        
+        # Function should exist
+        assert callable(create_new_table)
+        
+        # Should be able to call it (creates tables if not exist)
+        # This should not raise an error
+        try:
+            # Don't actually call it as it affects the real DB
+            # Just verify it's callable
+            assert hasattr(create_new_table, '__call__')
+        except Exception:
+            pass

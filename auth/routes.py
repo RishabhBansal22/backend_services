@@ -2,9 +2,9 @@ from fastapi import FastAPI, HTTPException, Cookie, Request
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
-from tokens import user_registration, user_login, decode_token, JWTError, create_access_token, get_referesh_token
+from tokens import user_registration, user_login, decode_token, JWTError, create_access_token, get_referesh_token, delete_refresh_token
 from config import settings
-from datetime import datetime, timedelta
+from datetime import datetime
 
 app = FastAPI()
 
@@ -12,7 +12,7 @@ class NewUser(BaseModel):
     first_name : str = Field(...,min_length=3)
     last_name : Optional[str] = None
     email : EmailStr = Field(...)
-    password : str = Field(...,min_length=6)
+    password : str = Field(...,min_length=6,max_length=20)
 
 class Login(BaseModel):
     email : EmailStr = Field(...)
@@ -21,6 +21,12 @@ class Login(BaseModel):
 
 class RefreshToken(BaseModel):
     refresh_token : Optional[str] = None
+
+
+class Logout(BaseModel):
+    access_token : str
+    refresh_token : str
+
 
 
 @app.post("/register", status_code=201)
@@ -179,3 +185,59 @@ async def refresh_token(response: Response, request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/logout")
+async def logout(request: Request, response: Response):
+    # Try to get refresh token from cookies first
+    refresh_token = request.cookies.get("refresh_token")
+    
+    # If not in cookies, try request body
+    if not refresh_token:
+        try:
+            body = await request.json()
+            logout_data = Logout(**body)
+            refresh_token = logout_data.refresh_token
+        except Exception:
+            pass  # Body parsing failed, refresh_token remains None
+    
+    # If still no refresh token, return error
+    if not refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Refresh token must be provided in cookies or request body"
+        )
+    
+    # Delete refresh token from database
+    result = delete_refresh_token(refresh_token)
+    
+    if result["status_code"] == 200:
+        # Check if cookies exist and delete them
+        if request.cookies.get("refresh_token") or request.cookies.get("access_token"):
+            json_response = JSONResponse(
+                content={"message": "Logout successful"}
+            )
+            json_response.delete_cookie(
+                key="access_token",
+                httponly=True,
+                samesite="lax"
+            )
+            json_response.delete_cookie(
+                key="refresh_token",
+                httponly=True,
+                samesite="lax"
+            )
+            return json_response
+        else:
+            return {
+                "message": "Logout successful, please delete tokens from local storage"
+            }
+    elif result["status_code"] == 404:
+        raise HTTPException(
+            status_code=404,
+            detail="Refresh token not found or already logged out"
+        )
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to logout"
+        )
+        

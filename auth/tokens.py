@@ -45,10 +45,12 @@ def user_registration(first_name:str,email:str, password:str,last_name:str=None)
         try:
             existing_user = session.query(Users).filter_by(email=email).first()
             if existing_user:
+                print("user already exists")
                 return {
                     "error": "Registration failed",
                     "status_code": 409
                 }
+            
             
             session.add(user)
             session.commit()

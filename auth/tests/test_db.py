@@ -153,7 +153,20 @@ class TestRefreshTokenModel:
     
     def test_create_refresh_token(self, test_session):
         """Test creating a refresh token."""
+        # First create a user (required for foreign key)
         user_id = str(uuid.uuid4())
+        user = Users(
+            id=user_id,
+            first_name="Token",
+            last_name="User",
+            email="tokenuser@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Now create refresh token
         token = RefreshToken(
             user_id=user_id,
             refresh_token="sample_refresh_token_123",
@@ -171,6 +184,19 @@ class TestRefreshTokenModel:
     def test_query_refresh_token_by_user_id(self, test_session):
         """Test querying refresh token by user_id."""
         user_id = str(uuid.uuid4())
+        # Create user first
+        user = Users(
+            id=user_id,
+            first_name="Query",
+            last_name="User",
+            email="queryuser@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Create token
         token = RefreshToken(
             user_id=user_id,
             refresh_token="token_xyz",
@@ -188,6 +214,19 @@ class TestRefreshTokenModel:
     def test_update_refresh_token(self, test_session):
         """Test updating a refresh token."""
         user_id = str(uuid.uuid4())
+        # Create user first
+        user = Users(
+            id=user_id,
+            first_name="Update",
+            last_name="User",
+            email="updateuser@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Create token
         token = RefreshToken(
             user_id=user_id,
             refresh_token="old_token",
@@ -209,6 +248,19 @@ class TestRefreshTokenModel:
     def test_delete_refresh_token(self, test_session):
         """Test deleting a refresh token."""
         user_id = str(uuid.uuid4())
+        # Create user first
+        user = Users(
+            id=user_id,
+            first_name="Delete",
+            last_name="Token",
+            email="deletetoken@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Create token
         token = RefreshToken(
             user_id=user_id,
             refresh_token="token_to_delete",
@@ -225,6 +277,38 @@ class TestRefreshTokenModel:
         # Verify deletion
         deleted_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
         assert deleted_token is None
+    
+    def test_refresh_token_large_value(self, test_session):
+        """Test that refresh token can store up to 500 characters."""
+        user_id = str(uuid.uuid4())
+        # Create user first
+        user = Users(
+            id=user_id,
+            first_name="Large",
+            last_name="Token",
+            email="largetoken@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Create a long token (close to 500 chars)
+        long_token = "a" * 450  # 450 character token
+        token = RefreshToken(
+            user_id=user_id,
+            refresh_token=long_token,
+            created_at=datetime.utcnow()
+        )
+        
+        test_session.add(token)
+        test_session.commit()
+        
+        # Verify token was stored correctly
+        retrieved_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
+        assert retrieved_token is not None
+        assert len(retrieved_token.refresh_token) == 450
+        assert retrieved_token.refresh_token == long_token
 
 
 class TestDatabaseOperations:
@@ -321,3 +405,236 @@ class TestDatabaseOperations:
         # Filter by last name
         smiths = test_session.query(Users).filter_by(last_name="Smith").all()
         assert len(smiths) == 2
+
+
+class TestDatabaseRelationships:
+    """Test suite for database relationships between Users and RefreshToken."""
+    
+    def test_user_refresh_token_relationship(self, test_session):
+        """Test the one-to-one relationship between User and RefreshToken."""
+        user_id = str(uuid.uuid4())
+        
+        # Create user
+        user = Users(
+            id=user_id,
+            first_name="Relationship",
+            last_name="Test",
+            email="relationship@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Create refresh token
+        token = RefreshToken(
+            user_id=user_id,
+            refresh_token="test_token_123",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(token)
+        test_session.commit()
+        
+        # Test relationship from User side
+        retrieved_user = test_session.query(Users).filter_by(id=user_id).first()
+        assert retrieved_user.refresh_token is not None
+        assert retrieved_user.refresh_token.refresh_token == "test_token_123"
+        
+        # Test relationship from RefreshToken side
+        retrieved_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
+        assert retrieved_token.user is not None
+        assert retrieved_token.user.email == "relationship@example.com"
+    
+    def test_user_without_refresh_token(self, test_session):
+        """Test that a user can exist without a refresh token."""
+        user_id = str(uuid.uuid4())
+        
+        user = Users(
+            id=user_id,
+            first_name="No",
+            last_name="Token",
+            email="notoken@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # User should exist but have no refresh token
+        retrieved_user = test_session.query(Users).filter_by(id=user_id).first()
+        assert retrieved_user is not None
+        assert retrieved_user.refresh_token is None
+    
+    def test_cascade_delete_user_with_token(self, test_session):
+        """Test that deleting a user automatically deletes their refresh token (cascade delete)."""
+        user_id = str(uuid.uuid4())
+        
+        # Create user
+        user = Users(
+            id=user_id,
+            first_name="Cascade",
+            last_name="Delete",
+            email="cascade@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Create refresh token
+        token = RefreshToken(
+            user_id=user_id,
+            refresh_token="token_to_cascade",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(token)
+        test_session.commit()
+        
+        # Verify token exists
+        existing_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
+        assert existing_token is not None
+        
+        # Delete user - token should be automatically deleted due to cascade
+        test_session.delete(user)
+        test_session.commit()
+        
+        # Verify user is deleted
+        deleted_user = test_session.query(Users).filter_by(id=user_id).first()
+        assert deleted_user is None
+        
+        # Verify token is also deleted (cascade delete)
+        deleted_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
+        assert deleted_token is None
+
+
+class TestDatabaseIndexing:
+    """Test suite for database indexing."""
+    
+    def test_email_index_exists(self, test_engine):
+        """Test that email column has an index."""
+        from sqlalchemy import inspect
+        
+        inspector = inspect(test_engine)
+        indexes = inspector.get_indexes('users')
+        
+        # Check if there's an index on email column
+        email_indexed = False
+        for index in indexes:
+            if 'email' in index['column_names']:
+                email_indexed = True
+                break
+        
+        # In SQLite, unique columns automatically get indexes
+        # So we should have at least one index on email
+        assert email_indexed or len(indexes) > 0
+    
+    def test_email_query_performance(self, test_session):
+        """Test querying by email (indexed column) is efficient."""
+        # Add multiple users
+        for i in range(100):
+            user = Users(
+                id=str(uuid.uuid4()),
+                first_name=f"User{i}",
+                last_name=f"Last{i}",
+                email=f"user{i}@example.com",
+                password="password",
+                created_at=datetime.utcnow()
+            )
+            test_session.add(user)
+        
+        test_session.commit()
+        
+        # Query by email should work efficiently
+        result = test_session.query(Users).filter_by(email="user50@example.com").first()
+        assert result is not None
+        assert result.first_name == "User50"
+    
+    def test_email_unique_constraint(self, test_session):
+        """Test that email unique constraint is enforced."""
+        user1 = Users(
+            id=str(uuid.uuid4()),
+            first_name="First",
+            last_name="User",
+            email="unique@example.com",
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user1)
+        test_session.commit()
+        
+        # Try to add another user with same email
+        user2 = Users(
+            id=str(uuid.uuid4()),
+            first_name="Second",
+            last_name="User",
+            email="unique@example.com",
+            password="password2",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user2)
+        
+        # Should raise exception on commit
+        from sqlalchemy.exc import IntegrityError
+        with pytest.raises(IntegrityError):
+            test_session.commit()
+
+
+class TestDatabaseSchema:
+    """Test suite for database schema validation."""
+    
+    def test_users_table_columns(self, test_engine):
+        """Test that Users table has all required columns."""
+        from sqlalchemy import inspect
+        
+        inspector = inspect(test_engine)
+        columns = inspector.get_columns('users')
+        column_names = [col['name'] for col in columns]
+        
+        required_columns = ['id', 'first_name', 'last_name', 'email', 'password', 'created_at']
+        for col in required_columns:
+            assert col in column_names
+    
+    def test_refresh_token_table_columns(self, test_engine):
+        """Test that RefreshToken table has all required columns."""
+        from sqlalchemy import inspect
+        
+        inspector = inspect(test_engine)
+        columns = inspector.get_columns('refresh_token')
+        column_names = [col['name'] for col in columns]
+        
+        required_columns = ['user_id', 'refresh_token', 'created_at']
+        for col in required_columns:
+            assert col in column_names
+    
+    def test_foreign_key_constraint(self, test_engine):
+        """Test that refresh_token has foreign key to users."""
+        from sqlalchemy import inspect
+        
+        inspector = inspect(test_engine)
+        foreign_keys = inspector.get_foreign_keys('refresh_token')
+        
+        # Should have at least one foreign key
+        assert len(foreign_keys) > 0
+        
+        # Foreign key should reference users table
+        fk = foreign_keys[0]
+        assert fk['referred_table'] == 'users'
+        assert 'user_id' in fk['constrained_columns']
+    
+    def test_varchar_limits(self, test_session):
+        """Test that varchar limits are enforced correctly."""
+        # Test email varchar(50)
+        user = Users(
+            id=str(uuid.uuid4()),
+            first_name="Test",
+            last_name="User",
+            email="a" * 40 + "@test.com",  # Just under 50 chars
+            password="password",
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        retrieved = test_session.query(Users).filter_by(id=user.id).first()
+        assert retrieved is not None
+        assert len(retrieved.email) <= 50

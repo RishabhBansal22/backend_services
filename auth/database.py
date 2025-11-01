@@ -22,7 +22,7 @@ class Users(Base):
     password = Column(String(100), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    refresh_token = relationship("RefreshToken", back_populates="user", uselist=False)
+    refresh_token = relationship("RefreshToken", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
 
 class RefreshToken(Base):
@@ -43,18 +43,4 @@ def create_new_table():
 
 if __name__ == "__main__":
     create_new_table()
-    # session = Session()
-    # dummy_users = [
-    #     Users(id=str(uuid.uuid4()), first_name="John", last_name="Doe", email="john.doe@example.com", password="password123", created_at=datetime.now()),
-    #     Users(id=str(uuid.uuid4()), first_name="Jane", last_name="Smith", email="jane.smith@example.com", password="password456", created_at=datetime.now()),
-    #     Users(id=str(uuid.uuid4()), first_name="Peter", last_name="Jones", email="peter.jones@example.com", password="password789", created_at=datetime.now())
-    # ]
-    # session.add_all(dummy_users)
-    # session.commit()
-    # session.close()
-    # print("Dummy users added to the database.")
-    # with Session() as session:
-    #     res = session.query(Users).all()
-    #     for user in res:
-    #         print(user.id, user.first_name, user.last_name, user.email, user.password, user.created_at)
-    # register = user_registration(
+   

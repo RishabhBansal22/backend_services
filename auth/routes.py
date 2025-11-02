@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Cookie, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
@@ -186,7 +186,7 @@ async def refresh_token(response: Response, request: Request):
 
 
 @app.post("/logout")
-async def logout(request: Request, response: Response):
+async def logout(request: Request):
     # Try to get refresh token from cookies first
     refresh_token = request.cookies.get("refresh_token")
     

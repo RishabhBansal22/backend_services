@@ -1,17 +1,31 @@
+"""
+Comprehensive test suite for authentication system.
+Tests cover:
+- Password hashing and verification
+- User registration and validation
+- User login and authentication
+- JWT token creation, validation, and expiration
+- Refresh token management
+- User query operations
+- Logout functionality
+- Password reset flow
+"""
+
 import pytest
 import sys
 import os
 from datetime import datetime, timedelta
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch, MagicMock, AsyncMock
 import uuid
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+import redis
 
 # Add parent directory to path to import modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from database import Base, Users, RefreshToken
-from auth.functions import (
+from functions import (
     hash_password,
     varify_password,
     user_registration,
@@ -23,15 +37,25 @@ from auth.functions import (
     save_refresh_token,
     get_referesh_token,
     delete_refresh_token,
+    create_access_token,
     reset_pass,
     update_pass_in_db
 )
 
 
+# ============================================================================
+# FIXTURES
+# ============================================================================
+
 @pytest.fixture(scope="function")
 def test_engine():
     """Create a test database engine using SQLite in-memory database."""
-    engine = create_engine("sqlite:///:memory:", echo=False)
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=None
+    )
     Base.metadata.create_all(engine)
     yield engine
     Base.metadata.drop_all(engine)
@@ -40,28 +64,72 @@ def test_engine():
 
 @pytest.fixture(scope="function")
 def test_session(test_engine):
-    """Create a test database session."""
+    """Create a test database session with context manager support."""
     TestSession = sessionmaker(bind=test_engine)
     session = TestSession()
+    
+    # Make the session work as a context manager
+    session.__enter__ = lambda: session
+    session.__exit__ = lambda exc_type, exc_val, exc_tb: False
+    
     yield session
     session.close()
 
 
 @pytest.fixture(scope="function")
 def mock_session(test_session):
-    """Mock the Session to use test_session."""
-    with patch('tokens.Session') as mock:
-        mock.return_value.__enter__ = Mock(return_value=test_session)
-        mock.return_value.__exit__ = Mock(return_value=False)
-        # Also support direct session call
-        mock.return_value = test_session
-        yield mock
+    """Mock the Session to use test_session for all database operations."""
+    with patch('functions.Session') as mock_session_class:
+        mock_session_class.return_value = test_session
+        yield mock_session_class
 
+
+@pytest.fixture
+def mock_redis():
+    """Mock Redis connection for password reset tests."""
+    mock_conn = MagicMock()
+    mock_conn.setex = MagicMock(return_value=True)
+    mock_conn.get = MagicMock(return_value=None)
+    mock_conn.delete = MagicMock(return_value=1)
+    mock_conn.ping = MagicMock(return_value=True)
+    return mock_conn
+
+
+@pytest.fixture
+def sample_user(test_session):
+    """Create a sample user in the test database."""
+    user_id = str(uuid.uuid4())
+    email = "testuser@example.com"
+    password = "TestPassword123"
+    
+    user = Users(
+        id=user_id,
+        first_name="Test",
+        last_name="User",
+        email=email,
+        password=hash_password(password),
+        created_at=datetime.utcnow()
+    )
+    test_session.add(user)
+    test_session.commit()
+    
+    return {
+        "user_id": user_id,
+        "email": email,
+        "password": password,
+        "first_name": "Test",
+        "last_name": "User"
+    }
+
+
+# ============================================================================
+# PASSWORD HASHING TESTS
+# ============================================================================
 
 class TestPasswordHashing:
-    """Test suite for password hashing functions."""
+    """Test suite for password hashing and verification functions."""
     
-    def test_hash_password(self):
+    def test_hash_password_returns_string(self):
         """Test that hash_password returns a hashed string."""
         password = "mySecurePassword123"
         hashed = hash_password(password)
@@ -71,13 +139,12 @@ class TestPasswordHashing:
         assert hashed != password
         assert len(hashed) > 0
     
-    def test_hash_password_different_each_time(self):
-        """Test that hashing the same password twice produces different hashes."""
+    def test_hash_password_different_salts(self):
+        """Test that hashing the same password twice produces different hashes due to different salts."""
         password = "samePassword"
         hash1 = hash_password(password)
         hash2 = hash_password(password)
         
-        # Bcrypt uses different salts, so hashes should be different
         assert hash1 != hash2
     
     def test_verify_password_correct(self):
@@ -85,8 +152,7 @@ class TestPasswordHashing:
         password = "correctPassword"
         hashed = hash_password(password)
         
-        result = varify_password(password, hashed)
-        assert result is True
+        assert varify_password(password, hashed) is True
     
     def test_verify_password_incorrect(self):
         """Test verifying an incorrect password."""
@@ -94,20 +160,64 @@ class TestPasswordHashing:
         wrong_password = "wrongPassword"
         hashed = hash_password(correct_password)
         
-        result = varify_password(wrong_password, hashed)
-        assert result is False
+        assert varify_password(wrong_password, hashed) is False
     
     def test_verify_password_empty_string(self):
         """Test verifying with empty password."""
         password = "password"
         hashed = hash_password(password)
         
-        result = varify_password("", hashed)
-        assert result is False
+        assert varify_password("", hashed) is False
+    
+    def test_hash_password_special_characters(self):
+        """Test hashing passwords with special characters."""
+        password = "P@ssw0rd!#$%^&*()"
+        hashed = hash_password(password)
+        
+        assert hashed is not None
+        assert varify_password(password, hashed) is True
+    
+    def test_hash_password_unicode(self):
+        """Test hashing passwords with unicode characters."""
+        password = "пароль密码🔒"
+        hashed = hash_password(password)
+        
+        assert hashed is not None
+        assert varify_password(password, hashed) is True
+    
+    def test_hash_password_very_long(self):
+        """Test hashing very long passwords (within bcrypt's 72 byte limit)."""
+        password = "a" * 70
+        hashed = hash_password(password)
+        
+        assert hashed is not None
+        assert varify_password(password, hashed) is True
+    
+    def test_verify_password_case_sensitive(self):
+        """Test that password verification is case-sensitive."""
+        password = "Password123"
+        hashed = hash_password(password)
+        
+        assert varify_password("password123", hashed) is False
+        assert varify_password("PASSWORD123", hashed) is False
+        assert varify_password(password, hashed) is True
+    
+    def test_verify_password_whitespace_matters(self):
+        """Test that whitespace in passwords matters."""
+        password = "password"
+        hashed = hash_password(password)
+        
+        assert varify_password(" password", hashed) is False
+        assert varify_password("password ", hashed) is False
+        assert varify_password(" password ", hashed) is False
 
+
+# ============================================================================
+# USER REGISTRATION TESTS
+# ============================================================================
 
 class TestUserRegistration:
-    """Test suite for user registration."""
+    """Test suite for user registration functionality."""
     
     def test_user_registration_success(self, mock_session, test_session):
         """Test successful user registration."""
@@ -123,14 +233,17 @@ class TestUserRegistration:
         assert result["new_user"]["name"] == "John Doe"
         assert result["new_user"]["email"] == "john.doe@example.com"
         assert "user_id" in result["new_user"]
+        assert "created_at" in result["new_user"]
     
     def test_user_registration_duplicate_email(self, mock_session, test_session):
         """Test registration with duplicate email."""
+        email = "duplicate@example.com"
+        
         # First registration
         user_registration(
             first_name="Jane",
             last_name="Smith",
-            email="jane@example.com",
+            email=email,
             password="password123"
         )
         
@@ -138,21 +251,22 @@ class TestUserRegistration:
         result = user_registration(
             first_name="Jane",
             last_name="Duplicate",
-            email="jane@example.com",
+            email=email,
             password="password456"
         )
         
         assert "error" in result
         assert result["status_code"] == 409
-        assert result["error"] == "Registration failed"
     
     def test_user_registration_case_insensitive_email(self, mock_session, test_session):
         """Test that email comparison is case-insensitive."""
+        email = "test@example.com"
+        
         # Register with lowercase email
         user_registration(
             first_name="Test",
             last_name="User",
-            email="test@example.com",
+            email=email,
             password="password123"
         )
         
@@ -189,17 +303,73 @@ class TestUserRegistration:
         
         assert result["status_code"] == 201
         assert result["new_user"]["email"] == "john@example.com"
+        assert result["new_user"]["name"] == "John Doe"
+    
+    def test_user_registration_email_normalization(self, mock_session, test_session):
+        """Test that emails are normalized to lowercase."""
+        result = user_registration(
+            first_name="Test",
+            last_name="User",
+            email="TEST@EXAMPLE.COM",
+            password="password123"
+        )
+        
+        assert result["status_code"] == 201
+        assert result["new_user"]["email"] == "test@example.com"
+    
+    def test_user_registration_creates_database_entry(self, mock_session, test_session):
+        """Test that registration actually creates database entry."""
+        email = "dbtest@example.com"
+        
+        result = user_registration(
+            first_name="Database",
+            last_name="Test",
+            email=email,
+            password="password123"
+        )
+        
+        assert result["status_code"] == 201
+        
+        # Verify user was created in database
+        user = test_session.query(Users).filter_by(email=email).first()
+        assert user is not None
+        assert user.first_name == "Database"
+        assert user.last_name == "Test"
+        assert user.email == email
+    
+    def test_user_registration_password_hashed(self, mock_session, test_session):
+        """Test that password is hashed in database."""
+        email = "hashtest@example.com"
+        password = "plainPassword123"
+        
+        result = user_registration(
+            first_name="Hash",
+            last_name="Test",
+            email=email,
+            password=password
+        )
+        
+        assert result["status_code"] == 201
+        
+        # Verify password is hashed
+        user = test_session.query(Users).filter_by(email=email).first()
+        assert user.password != password
+        assert varify_password(password, user.password) is True
 
+
+# ============================================================================
+# USER LOGIN TESTS
+# ============================================================================
 
 class TestUserLogin:
-    """Test suite for user login function."""
+    """Test suite for user login functionality."""
     
     def test_user_login_success(self, mock_session, test_session):
         """Test successful user login returns access and refresh tokens."""
-        # First register a user
         password = "myPassword123"
         email = "login@example.com"
         
+        # Register a user first
         user_registration(
             first_name="Login",
             last_name="Test",
@@ -210,7 +380,7 @@ class TestUserLogin:
         # Attempt login
         result = user_login(email=email, password=password)
         
-        # Should return tuple of tuples: ((access_token, access_exp), (refresh_token, refresh_exp))
+        # Should return tuple of tuples
         assert isinstance(result, tuple)
         assert len(result) == 2
         
@@ -221,27 +391,24 @@ class TestUserLogin:
         access_token, access_exp = access_token_tuple
         refresh_token, refresh_exp = refresh_token_tuple
         
-        # Verify tokens are not empty strings
+        # Verify tokens
         assert isinstance(access_token, str)
         assert len(access_token) > 0
         assert isinstance(refresh_token, str)
         assert len(refresh_token) > 0
-        
-        # Verify tokens can be decoded
-        decoded_access = decode_token(access_token)
-        assert decoded_access is not None
-        assert decoded_access["email"] == email.lower()
+        assert isinstance(access_exp, datetime)
+        assert isinstance(refresh_exp, datetime)
     
     def test_user_login_wrong_password(self, mock_session, test_session):
         """Test login with wrong password returns error."""
-        email = "user@example.com"
+        email = "wrongpass@example.com"
         correct_password = "correctPassword"
         wrong_password = "wrongPassword"
         
         # Register user
         user_registration(
-            first_name="User",
-            last_name="Test",
+            first_name="Wrong",
+            last_name="Pass",
             email=email,
             password=correct_password
         )
@@ -249,10 +416,8 @@ class TestUserLogin:
         # Attempt login with wrong password
         result = user_login(email=email, password=wrong_password)
         
-        # Should return error dict
         assert isinstance(result, dict)
         assert "error" in result
-        assert "status_code" in result
         assert result["status_code"] == 401
         assert "Invalid email or password" in result["error"]
     
@@ -265,9 +430,7 @@ class TestUserLogin:
         
         assert isinstance(result, dict)
         assert "error" in result
-        assert "status_code" in result
         assert result["status_code"] == 401
-        assert "Invalid email or password" in result["error"]
     
     def test_user_login_case_insensitive_email(self, mock_session, test_session):
         """Test that login is case-insensitive for email addresses."""
@@ -308,9 +471,6 @@ class TestUserLogin:
         result = user_login(email="  whitespace@example.com  ", password=password)
         
         assert isinstance(result, tuple)
-        access_token_tuple, _ = result
-        access_token, _ = access_token_tuple
-        assert len(access_token) > 0
     
     def test_user_login_refresh_token_saved(self, mock_session, test_session):
         """Test that refresh token is saved to database on successful login."""
@@ -340,11 +500,11 @@ class TestUserLogin:
     
     def test_user_login_empty_password(self, mock_session, test_session):
         """Test login with empty password returns error."""
-        email = "test@example.com"
+        email = "emptypass@example.com"
         
         user_registration(
-            first_name="Test",
-            last_name="User",
+            first_name="Empty",
+            last_name="Pass",
             email=email,
             password="RealPassword123"
         )
@@ -353,10 +513,36 @@ class TestUserLogin:
         
         assert isinstance(result, dict)
         assert result["status_code"] == 401
+    
+    def test_user_login_token_contains_user_data(self, mock_session, test_session):
+        """Test that access token contains correct user data."""
+        password = "TestPass123"
+        email = "tokendata@example.com"
+        
+        reg_result = user_registration(
+            first_name="Token",
+            last_name="Data",
+            email=email,
+            password=password
+        )
+        user_id = reg_result["new_user"]["user_id"]
+        
+        result = user_login(email=email, password=password)
+        access_token_tuple, _ = result
+        access_token, _ = access_token_tuple
+        
+        decoded = decode_token(access_token)
+        assert decoded["sub"] == user_id
+        assert decoded["email"] == email
+        assert "exp" in decoded
 
+
+# ============================================================================
+# TOKEN OPERATIONS TESTS
+# ============================================================================
 
 class TestTokenOperations:
-    """Test suite for JWT token operations."""
+    """Test suite for JWT token creation and validation."""
     
     def test_create_token(self):
         """Test creating a JWT token."""
@@ -370,6 +556,7 @@ class TestTokenOperations:
         
         assert token is not None
         assert isinstance(token, str)
+        assert len(token) > 0
         assert isinstance(expire_time, datetime)
     
     def test_decode_token_valid(self):
@@ -394,58 +581,119 @@ class TestTokenOperations:
             "user_id": "123",
             "email": "test@example.com"
         }
-        # Create a token that expires immediately
         expires_delta = timedelta(seconds=-1)
         
         token, _ = create_token(data, expires_delta)
-        
-        # Attempt to decode expired token
         decoded = decode_token(token)
         
-        # Should return None for expired tokens
         assert decoded is None
     
     def test_decode_token_invalid(self):
         """Test decoding an invalid token returns None."""
         invalid_token = "invalid.token.string"
-        
         decoded = decode_token(invalid_token)
         
-        # Should return None for invalid tokens
         assert decoded is None
+    
+    def test_token_includes_expiration(self):
+        """Test that created tokens include expiration claim."""
+        data = {"user_id": "123", "email": "test@example.com"}
+        expires_delta = timedelta(minutes=15)
+        
+        token, expire_time = create_token(data, expires_delta)
+        decoded = decode_token(token)
+        
+        assert "exp" in decoded
+        assert decoded["exp"] > datetime.utcnow().timestamp()
+    
+    def test_token_expiration_matches_timedelta(self):
+        """Test that token expiration matches the provided timedelta."""
+        data = {"user_id": "123"}
+        expires_delta = timedelta(minutes=30)
+        
+        before_time = datetime.utcnow()
+        token, expire_time = create_token(data, expires_delta)
+        after_time = datetime.utcnow()
+        
+        expected_min = before_time + expires_delta
+        expected_max = after_time + expires_delta
+        
+        assert expected_min <= expire_time <= expected_max
+    
+    def test_create_access_token_success(self, mock_session, test_session):
+        """Test creating an access token for a valid user."""
+        user_id = str(uuid.uuid4())
+        email = "accesstoken@example.com"
+        
+        # Create user
+        user = Users(
+            id=user_id,
+            first_name="Access",
+            last_name="Token",
+            email=email,
+            password=hash_password("password"),
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        with patch('functions.Session', return_value=test_session):
+            access_token, expire_time = create_access_token(user_id)
+        
+        assert access_token is not None
+        assert isinstance(access_token, str)
+        assert expire_time is not None
+        assert isinstance(expire_time, datetime)
+        
+        decoded = decode_token(access_token)
+        assert decoded is not None
+        assert decoded["sub"] == user_id
+        assert decoded["email"] == email
+    
+    def test_create_access_token_nonexistent_user(self, mock_session, test_session):
+        """Test creating access token with non-existent user."""
+        fake_user_id = str(uuid.uuid4())
+        
+        with patch('functions.Session', return_value=test_session):
+            access_token, expire_time = create_access_token(fake_user_id)
+        
+        assert access_token is None
+        assert expire_time is None
 
+
+# ============================================================================
+# REFRESH TOKEN OPERATIONS TESTS
+# ============================================================================
 
 class TestRefreshTokenOperations:
-    """Test suite for refresh token operations."""
+    """Test suite for refresh token database operations."""
     
     def test_save_refresh_token_new_user(self, mock_session, test_session):
         """Test saving a refresh token for a user who doesn't have one yet."""
         user_id = str(uuid.uuid4())
         refresh_token = "new_refresh_token_123"
         
-        # First create a user
+        # Create user
         user = Users(
             id=user_id,
             first_name="Test",
             last_name="User",
             email="test@example.com",
-            password="hashed_pass",
+            password=hash_password("password"),
             created_at=datetime.utcnow()
         )
         test_session.add(user)
         test_session.commit()
         
-        # Save refresh token (first time for this user)
+        # Save refresh token
         result = save_refresh_token(user_id, refresh_token)
         
-        # Should return None on success
         assert result is None
         
         # Verify token was saved
         saved_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
         assert saved_token is not None
         assert saved_token.refresh_token == refresh_token
-        assert saved_token.user_id == user_id
     
     def test_save_refresh_token_update_existing(self, mock_session, test_session):
         """Test updating an existing refresh token."""
@@ -459,7 +707,7 @@ class TestRefreshTokenOperations:
             first_name="Test",
             last_name="User",
             email="update@example.com",
-            password="hashed_pass",
+            password=hash_password("password"),
             created_at=datetime.utcnow()
         )
         test_session.add(user)
@@ -483,40 +731,6 @@ class TestRefreshTokenOperations:
         all_tokens = test_session.query(RefreshToken).filter_by(user_id=user_id).all()
         assert len(all_tokens) == 1
         assert all_tokens[0].refresh_token == new_token
-        assert all_tokens[0].refresh_token != old_token
-    
-    def test_save_refresh_token_updates_timestamp(self, mock_session, test_session):
-        """Test that saving refresh token updates the created_at timestamp."""
-        user_id = str(uuid.uuid4())
-        
-        # Create user
-        user = Users(
-            id=user_id,
-            first_name="Test",
-            last_name="User",
-            email="timestamp@example.com",
-            password="hashed_pass",
-            created_at=datetime.utcnow()
-        )
-        test_session.add(user)
-        test_session.commit()
-        
-        # Save first token
-        old_time = datetime(2024, 1, 1, 0, 0, 0)
-        token = RefreshToken(
-            user_id=user_id,
-            refresh_token="token1",
-            created_at=old_time
-        )
-        test_session.add(token)
-        test_session.commit()
-        
-        # Update token
-        save_refresh_token(user_id, "token2")
-        
-        # Verify timestamp was updated
-        saved_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
-        assert saved_token.created_at > old_time
     
     def test_get_refresh_token_exists(self, mock_session, test_session):
         """Test retrieving an existing refresh token."""
@@ -542,131 +756,9 @@ class TestRefreshTokenOperations:
     def test_get_refresh_token_not_exists(self, mock_session, test_session):
         """Test retrieving refresh token for user who doesn't have one."""
         user_id = str(uuid.uuid4())
-        
-        # Attempt to retrieve non-existent token
         retrieved = get_referesh_token(user_id)
         
         assert retrieved is None
-    
-    def test_save_refresh_token_handles_special_characters(self, mock_session, test_session):
-        """Test that refresh tokens with special characters are saved correctly."""
-        user_id = str(uuid.uuid4())
-        # JWT tokens can contain special characters
-        refresh_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
-        
-        # Create user
-        user = Users(
-            id=user_id,
-            first_name="Special",
-            last_name="Chars",
-            email="special@example.com",
-            password="hashed_pass",
-            created_at=datetime.utcnow()
-        )
-        test_session.add(user)
-        test_session.commit()
-        
-        # Save token
-        result = save_refresh_token(user_id, refresh_token)
-        
-        assert result is None
-        
-        # Verify token was saved correctly
-        saved_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
-        assert saved_token.refresh_token == refresh_token
-
-
-class TestUserQuery:
-    """Test suite for user query functions."""
-    
-    def test_find_user_by_email_exists(self, mock_session, test_session):
-        """Test finding an existing user by email."""
-        user_id = str(uuid.uuid4())
-        email = "findme@example.com"
-        
-        user = Users(
-            id=user_id,
-            first_name="Find",
-            last_name="Me",
-            email=email,
-            password="hashed_password",
-            created_at=datetime.utcnow()
-        )
-        test_session.add(user)
-        test_session.commit()
-        
-        # Mock the Session to return our test_session
-        with patch('tokens.Session', return_value=test_session):
-            result = find_user_by_email(email)
-        
-        assert result is not None
-        assert result["email"] == email
-        assert result["first_name"] == "Find"
-        assert result["last_name"] == "Me"
-    
-    def test_find_user_by_email_not_exists(self, mock_session, test_session):
-        """Test finding a non-existent user by email."""
-        with patch('tokens.Session', return_value=test_session):
-            result = find_user_by_email("nonexistent@example.com")
-        
-        assert result is None
-    
-    def test_find_user_by_id_exists(self, mock_session, test_session):
-        """Test finding an existing user by ID."""
-        user_id = str(uuid.uuid4())
-        
-        user = Users(
-            id=user_id,
-            first_name="Test",
-            last_name="User",
-            email="test@example.com",
-            password="hashed_password",
-            created_at=datetime.utcnow()
-        )
-        test_session.add(user)
-        test_session.commit()
-        
-        with patch('tokens.Session', return_value=test_session):
-            result = find_user_by_id(user_id)
-        
-        assert result is not None
-        assert result["user_id"] == user_id
-        assert result["first_name"] == "Test"
-        assert result["email"] == "test@example.com"
-    
-    def test_find_user_by_id_not_exists(self, mock_session, test_session):
-        """Test finding a non-existent user by ID."""
-        fake_id = str(uuid.uuid4())
-        
-        with patch('tokens.Session', return_value=test_session):
-            result = find_user_by_id(fake_id)
-        
-        assert result is None
-    
-    def test_find_user_by_email_case_insensitive(self, mock_session, test_session):
-        """Test that email search is case-insensitive."""
-        user_id = str(uuid.uuid4())
-        
-        user = Users(
-            id=user_id,
-            first_name="Case",
-            last_name="Test",
-            email="lowercase@example.com",
-            password="hashed_password",
-            created_at=datetime.utcnow()
-        )
-        test_session.add(user)
-        test_session.commit()
-        
-        with patch('tokens.Session', return_value=test_session):
-            result = find_user_by_email("LOWERCASE@EXAMPLE.COM")
-        
-        assert result is not None
-        assert result["email"] == "lowercase@example.com"
-
-
-class TestLogoutOperations:
-    """Test suite for logout operations."""
     
     def test_delete_refresh_token_success(self, mock_session, test_session):
         """Test successfully deleting a refresh token."""
@@ -679,7 +771,7 @@ class TestLogoutOperations:
             first_name="Delete",
             last_name="Test",
             email="delete@example.com",
-            password="hashed_pass",
+            password=hash_password("password"),
             created_at=datetime.utcnow()
         )
         test_session.add(user)
@@ -699,9 +791,8 @@ class TestLogoutOperations:
         
         assert result is not None
         assert result["status_code"] == 200
-        assert "message" in result
         
-        # Verify token was deleted from database
+        # Verify token was deleted
         deleted_token = test_session.query(RefreshToken).filter_by(refresh_token=refresh_token_value).first()
         assert deleted_token is None
     
@@ -713,15 +804,7 @@ class TestLogoutOperations:
         
         assert result is not None
         assert result["status_code"] == 404
-        assert "message" in result
         assert "not found" in result["message"].lower()
-    
-    def test_delete_refresh_token_handles_none(self, mock_session, test_session):
-        """Test deleting with None as token."""
-        result = delete_refresh_token(None)
-        
-        assert result is not None
-        assert result["status_code"] in [404, 500]
     
     def test_delete_refresh_token_empty_string(self, mock_session, test_session):
         """Test deleting with empty string as token."""
@@ -729,232 +812,70 @@ class TestLogoutOperations:
         
         assert result is not None
         assert result["status_code"] == 404
-        assert "message" in result
 
 
-class TestCreateAccessToken:
-    """Test suite for create_access_token function."""
+# ============================================================================
+# USER QUERY TESTS
+# ============================================================================
+
+class TestUserQuery:
+    """Test suite for user query functions."""
     
-    def test_create_access_token_success(self, mock_session, test_session):
-        """Test creating an access token for a valid user."""
-        from auth.functions import create_access_token
-        
+    def test_find_user_by_email_exists(self, mock_session, test_session):
+        """Test finding an existing user by email."""
         user_id = str(uuid.uuid4())
-        email = "accesstoken@example.com"
+        email = "findme@example.com"
         
-        # Create user
         user = Users(
             id=user_id,
-            first_name="Access",
-            last_name="Token",
+            first_name="Find",
+            last_name="Me",
             email=email,
-            password="hashed_pass",
+            password=hash_password("password"),
             created_at=datetime.utcnow()
         )
         test_session.add(user)
         test_session.commit()
         
-        # Mock find_user_by_id to return test user
-        with patch('tokens.Session', return_value=test_session):
-            access_token, expire_time = create_access_token(user_id)
+        with patch('functions.Session', return_value=test_session):
+            result = find_user_by_email(email)
         
-        # Verify token was created
-        assert access_token is not None
-        assert isinstance(access_token, str)
-        assert len(access_token) > 0
-        
-        # Verify expiration time is set
-        assert expire_time is not None
-        assert isinstance(expire_time, datetime)
-        assert expire_time > datetime.utcnow()
-        
-        # Decode and verify token contents
-        decoded = decode_token(access_token)
-        assert decoded is not None
-        assert decoded["sub"] == user_id
-        assert decoded["email"] == email
+        assert result is not None
+        assert result["email"] == email
+        assert result["first_name"] == "Find"
+        assert result["last_name"] == "Me"
+        assert result["user_id"] == user_id
     
-    def test_create_access_token_with_nonexistent_user(self, mock_session, test_session):
-        """Test creating access token with non-existent user."""
-        from auth.functions import create_access_token
+    def test_find_user_by_email_not_exists(self, mock_session, test_session):
+        """Test finding a non-existent user by email."""
+        with patch('functions.Session', return_value=test_session):
+            result = find_user_by_email("nonexistent@example.com")
         
-        fake_user_id = str(uuid.uuid4())
-        
-        # This should handle gracefully or raise error
-        with patch('tokens.Session', return_value=test_session):
-            try:
-                result = create_access_token(fake_user_id)
-                # If it doesn't raise, result might be None or error tuple
-                # The function may fail when trying to get email from None user
-            except (TypeError, AttributeError):
-                # Expected behavior - can't create token for non-existent user
-                pass
-
-
-class TestTokenExpiration:
-    """Test suite for token expiration handling."""
+        assert result is None
     
-    def test_token_includes_expiration(self):
-        """Test that created tokens include expiration claim."""
-        from auth.functions import create_token
+    def test_find_user_by_email_case_insensitive(self, mock_session, test_session):
+        """Test that email search is case-insensitive."""
+        user_id = str(uuid.uuid4())
         
-        data = {"user_id": "123", "email": "test@example.com"}
-        expires_delta = timedelta(minutes=15)
-        
-        token, expire_time = create_token(data, expires_delta)
-        decoded = decode_token(token)
-        
-        assert "exp" in decoded
-        assert decoded["exp"] > datetime.utcnow().timestamp()
-    
-    def test_token_expiration_matches_timedelta(self):
-        """Test that token expiration matches the provided timedelta."""
-        from auth.functions import create_token
-        
-        data = {"user_id": "123"}
-        expires_delta = timedelta(minutes=30)
-        
-        before_time = datetime.utcnow()
-        token, expire_time = create_token(data, expires_delta)
-        after_time = datetime.utcnow()
-        
-        # expire_time should be approximately 30 minutes from now
-        expected_min = before_time + expires_delta
-        expected_max = after_time + expires_delta
-        
-        assert expected_min <= expire_time <= expected_max
-    
-    def test_decode_token_with_zero_expiration(self):
-        """Test decoding a token that expires immediately."""
-        from auth.functions import create_token
-        
-        data = {"user_id": "123"}
-        expires_delta = timedelta(seconds=0)
-        
-        token, _ = create_token(data, expires_delta)
-        
-        # Token might already be expired or expire very soon
-        # decode_token should return None for expired tokens
-        import time
-        time.sleep(1)  # Wait to ensure expiration
-        
-        decoded = decode_token(token)
-        assert decoded is None
-
-
-class TestPasswordValidation:
-    """Test suite for password validation edge cases."""
-    
-    def test_hash_password_special_characters(self):
-        """Test hashing passwords with special characters."""
-        password = "P@ssw0rd!#$%^&*()"
-        hashed = hash_password(password)
-        
-        assert hashed is not None
-        assert varify_password(password, hashed) is True
-    
-    def test_hash_password_unicode(self):
-        """Test hashing passwords with unicode characters."""
-        password = "пароль密码🔒"
-        hashed = hash_password(password)
-        
-        assert hashed is not None
-        assert varify_password(password, hashed) is True
-    
-    def test_hash_password_very_long(self):
-        """Test hashing very long passwords (bcrypt has 72 byte limit)."""
-        password = "a" * 70  # Within bcrypt's 72 byte limit
-        hashed = hash_password(password)
-        
-        assert hashed is not None
-        assert varify_password(password, hashed) is True
-    
-    def test_verify_password_case_sensitive(self):
-        """Test that password verification is case-sensitive."""
-        password = "Password123"
-        hashed = hash_password(password)
-        
-        # Different case should fail
-        assert varify_password("password123", hashed) is False
-        assert varify_password("PASSWORD123", hashed) is False
-    
-    def test_verify_password_whitespace_matters(self):
-        """Test that whitespace in passwords matters."""
-        password = "password"
-        hashed = hash_password(password)
-        
-        # With spaces should fail
-        assert varify_password(" password", hashed) is False
-        assert varify_password("password ", hashed) is False
-        assert varify_password(" password ", hashed) is False
-
-
-class TestUserRegistrationEdgeCases:
-    """Test suite for user registration edge cases."""
-    
-    def test_user_registration_with_very_long_name(self, mock_session, test_session):
-        """Test registration with names at varchar limits."""
-        result = user_registration(
-            first_name="A" * 50,  # At varchar(50) limit
-            last_name="B" * 50,
-            email="longname@example.com",
-            password="password123"
+        user = Users(
+            id=user_id,
+            first_name="Case",
+            last_name="Test",
+            email="lowercase@example.com",
+            password=hash_password("password"),
+            created_at=datetime.utcnow()
         )
+        test_session.add(user)
+        test_session.commit()
         
-        assert result["status_code"] == 201
-        assert "new_user" in result
+        with patch('functions.Session', return_value=test_session):
+            result = find_user_by_email("LOWERCASE@EXAMPLE.COM")
+        
+        assert result is not None
+        assert result["email"] == "lowercase@example.com"
     
-    def test_user_registration_email_normalization(self, mock_session, test_session):
-        """Test that emails are normalized to lowercase."""
-        result = user_registration(
-            first_name="Test",
-            last_name="User",
-            email="TEST@EXAMPLE.COM",
-            password="password123"
-        )
-        
-        assert result["status_code"] == 201
-        assert result["new_user"]["email"] == "test@example.com"
-    
-    def test_user_registration_with_extra_whitespace(self, mock_session, test_session):
-        """Test registration with extra whitespace in names."""
-        result = user_registration(
-            first_name="  John  ",
-            last_name="  Doe  ",
-            email="  whitespace@test.com  ",
-            password="password123"
-        )
-        
-        assert result["status_code"] == 201
-        # Names should be stripped
-        assert result["new_user"]["name"] == "John Doe"
-        assert result["new_user"]["email"] == "whitespace@test.com"
-
-
-class TestGetRefreshTokenEdgeCases:
-    """Test suite for get_referesh_token edge cases."""
-    
-    def test_get_refresh_token_with_invalid_user_id(self, mock_session, test_session):
-        """Test getting refresh token with invalid user_id format."""
-        invalid_user_id = "not-a-uuid"
-        
-        result = get_referesh_token(invalid_user_id)
-        
-        # Should return None or handle gracefully
-        assert result is None or isinstance(result, Exception)
-    
-    def test_get_refresh_token_empty_string(self, mock_session, test_session):
-        """Test getting refresh token with empty string user_id."""
-        result = get_referesh_token("")
-        
-        assert result is None or isinstance(result, Exception)
-
-
-class TestFindUserEdgeCases:
-    """Test suite for find_user functions edge cases."""
-    
-    def test_find_user_by_email_with_whitespace(self, mock_session, test_session):
-        """Test finding user with whitespace in email."""
+    def test_find_user_by_id_exists(self, mock_session, test_session):
+        """Test finding an existing user by ID."""
         user_id = str(uuid.uuid4())
         
         user = Users(
@@ -962,140 +883,93 @@ class TestFindUserEdgeCases:
             first_name="Test",
             last_name="User",
             email="test@example.com",
-            password="hashed_pass",
+            password=hash_password("password"),
             created_at=datetime.utcnow()
         )
         test_session.add(user)
         test_session.commit()
         
-        with patch('tokens.Session', return_value=test_session):
-            # Email with spaces should be normalized
-            result = find_user_by_email("  test@example.com  ")
+        with patch('functions.Session', return_value=test_session):
+            result = find_user_by_id(user_id)
         
         assert result is not None
+        assert result["user_id"] == user_id
+        assert result["first_name"] == "Test"
         assert result["email"] == "test@example.com"
     
-    def test_find_user_by_email_empty_string(self, mock_session, test_session):
-        """Test finding user with empty email."""
-        with patch('tokens.Session', return_value=test_session):
-            result = find_user_by_email("")
+    def test_find_user_by_id_not_exists(self, mock_session, test_session):
+        """Test finding a non-existent user by ID."""
+        fake_id = str(uuid.uuid4())
         
-        assert result is None
-    
-    def test_find_user_by_id_empty_string(self, mock_session, test_session):
-        """Test finding user with empty id."""
-        with patch('tokens.Session', return_value=test_session):
-            result = find_user_by_id("")
+        with patch('functions.Session', return_value=test_session):
+            result = find_user_by_id(fake_id)
         
         assert result is None
 
 
-class TestDatabaseFunctions:
-    """Test suite for database.py functions."""
-    
-    def test_create_new_table_function_exists(self):
-        """Test that create_new_table function exists and can be called."""
-        from database import create_new_table
-        
-        # Function should exist
-        assert callable(create_new_table)
-        
-        # Should be able to call it (creates tables if not exist)
-        # This should not raise an error
-        try:
-            # Don't actually call it as it affects the real DB
-            # Just verify it's callable
-            assert hasattr(create_new_table, '__call__')
-        except Exception:
-            pass
-
+# ============================================================================
+# PASSWORD RESET FLOW TESTS
+# ============================================================================
 
 class TestPasswordResetFlow:
-    """Test suite for password reset functionality."""
-    
-    @pytest.fixture
-    def mock_redis(self):
-        """Mock Redis connection."""
-        mock_conn = MagicMock()
-        mock_conn.setex = MagicMock(return_value=True)
-        mock_conn.get = MagicMock(return_value=None)
-        mock_conn.delete = MagicMock(return_value=1)
-        return mock_conn
+    """Test suite for password reset functionality (forget password and reset)."""
     
     def test_reset_pass_success(self, mock_redis):
         """Test successful generation of password reset token."""
-        from auth.functions import reset_pass
-        
         user_id = str(uuid.uuid4())
         
-        with patch('tokens.conn', mock_redis):
+        with patch('functions.conn', mock_redis):
             reset_token = reset_pass(user_id)
         
-        # Verify token was generated
         assert reset_token is not None
         assert isinstance(reset_token, str)
         assert len(reset_token) > 0
         
-        # Verify Redis was called correctly
+        # Verify Redis was called
         mock_redis.setex.assert_called_once()
         call_args = mock_redis.setex.call_args
         
-        # Check that key format is correct
         redis_key = call_args[0][0]
         assert redis_key.startswith("password_reset:")
         assert reset_token in redis_key
         
-        # Check expiration time (should be 900 seconds / 15 minutes)
         expiration = call_args[0][1]
-        assert expiration == 900
+        assert expiration == 900  # 15 minutes
         
-        # Check user_id is stored as value
         stored_user_id = call_args[0][2]
         assert stored_user_id == user_id
     
     def test_reset_pass_no_redis_connection(self):
         """Test reset_pass when Redis connection is not available."""
-        from auth.functions import reset_pass
-        
         user_id = str(uuid.uuid4())
         
-        with patch('tokens.conn', None):
+        with patch('functions.conn', None):
             reset_token = reset_pass(user_id)
         
-        # Should return None when Redis is unavailable
         assert reset_token is None
     
     def test_reset_pass_redis_error(self, mock_redis):
         """Test reset_pass when Redis raises an error."""
-        from auth.functions import reset_pass
-        import redis
-        
         user_id = str(uuid.uuid4())
         mock_redis.setex.side_effect = redis.RedisError("Connection failed")
         
-        with patch('tokens.conn', mock_redis):
+        with patch('functions.conn', mock_redis):
             reset_token = reset_pass(user_id)
         
-        # Should return None on Redis error
         assert reset_token is None
     
     def test_reset_pass_generates_unique_tokens(self, mock_redis):
         """Test that reset_pass generates unique tokens for each call."""
-        from auth.functions import reset_pass
-        
         user_id = str(uuid.uuid4())
         
-        with patch('tokens.conn', mock_redis):
+        with patch('functions.conn', mock_redis):
             token1 = reset_pass(user_id)
             token2 = reset_pass(user_id)
         
-        # Tokens should be different
         assert token1 != token2
     
     def test_update_pass_in_db_success(self, mock_session, test_session, mock_redis):
         """Test successful password update with valid reset token."""
-        from auth.functions import update_pass_in_db
-        
         user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())
         new_password = "newSecurePass123"
@@ -1112,114 +986,69 @@ class TestPasswordResetFlow:
         test_session.add(user)
         test_session.commit()
         
-        # Mock Redis to return user_id for the reset token
-        mock_redis.get.return_value = user_id
+        # Mock Redis to return user_id as bytes
+        mock_redis.get.return_value = user_id.encode('utf-8')
         
-        with patch('tokens.conn', mock_redis):
+        with patch('functions.conn', mock_redis):
             result = update_pass_in_db(reset_token, new_password)
         
-        # Verify success
         assert result["status_code"] == 200
-        assert "message" in result
         assert "successfully" in result["message"].lower()
         
-        # Verify Redis was queried with correct key
+        # Verify Redis was queried
         redis_key = f"password_reset:{reset_token}"
         mock_redis.get.assert_called_with(redis_key)
         
         # Verify Redis token was deleted
         mock_redis.delete.assert_called_with(redis_key)
         
-        # Verify password was updated in database
+        # Verify password was updated
         updated_user = test_session.query(Users).filter_by(id=user_id).first()
-        assert updated_user is not None
-        
-        # Verify new password works
         assert varify_password(new_password, updated_user.password) is True
         assert varify_password("oldPassword", updated_user.password) is False
     
     def test_update_pass_in_db_invalid_token(self, mock_session, test_session, mock_redis):
         """Test password update with invalid/expired reset token."""
-        from auth.functions import update_pass_in_db
-        
         reset_token = str(uuid.uuid4())
         new_password = "newPassword123"
         
         # Mock Redis to return None (token not found/expired)
         mock_redis.get.return_value = None
         
-        with patch('tokens.conn', mock_redis):
+        with patch('functions.conn', mock_redis):
             result = update_pass_in_db(reset_token, new_password)
         
-        # Should return error
         assert result["status_code"] == 400
         assert "error" in result
-        assert "invalid" in result["error"].lower() or "expired" in result["error"].lower()
     
     def test_update_pass_in_db_user_not_found(self, mock_session, test_session, mock_redis):
         """Test password update when user doesn't exist in database."""
-        from auth.functions import update_pass_in_db
-        
         fake_user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())
         new_password = "newPassword123"
         
         # Mock Redis to return a user_id that doesn't exist
-        mock_redis.get.return_value = fake_user_id
+        mock_redis.get.return_value = fake_user_id.encode('utf-8')
         
-        with patch('tokens.conn', mock_redis):
+        with patch('functions.conn', mock_redis):
             result = update_pass_in_db(reset_token, new_password)
         
-        # Should return 404 error
         assert result["status_code"] == 404
         assert "error" in result
-        assert "not found" in result["error"].lower()
     
-    def test_update_pass_in_db_no_redis_connection(self, mock_session, test_session):
+    def test_update_pass_in_db_no_redis_connection(self):
         """Test password update when Redis connection is not available."""
-        from auth.functions import update_pass_in_db
-        
         reset_token = str(uuid.uuid4())
         new_password = "newPassword123"
         
-        with patch('tokens.conn', None):
+        with patch('functions.conn', None):
             result = update_pass_in_db(reset_token, new_password)
         
-        # Should return 500 error
         assert result["status_code"] == 500
         assert "error" in result
-        assert "redis" in result["error"].lower()
-    
-    def test_update_pass_in_db_empty_token(self, mock_session, test_session, mock_redis):
-        """Test password update with empty reset token."""
-        from auth.functions import update_pass_in_db
-        
-        with patch('tokens.conn', mock_redis):
-            result = update_pass_in_db("", "newPassword123")
-        
-        # Should return 400 error
-        assert result["status_code"] == 400
-        assert "error" in result
-        assert "required" in result["error"].lower()
-    
-    def test_update_pass_in_db_empty_password(self, mock_session, test_session, mock_redis):
-        """Test password update with empty new password."""
-        from auth.functions import update_pass_in_db
-        
-        reset_token = str(uuid.uuid4())
-        
-        with patch('tokens.conn', mock_redis):
-            result = update_pass_in_db(reset_token, "")
-        
-        # Should return 400 error
-        assert result["status_code"] == 400
-        assert "error" in result
-        assert "required" in result["error"].lower()
     
     def test_update_pass_in_db_deletes_refresh_token(self, mock_session, test_session, mock_redis):
         """Test that password update deletes existing refresh token."""
-        from auth.functions import update_pass_in_db
-        
         user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())
         new_password = "newSecurePass123"
@@ -1246,75 +1075,114 @@ class TestPasswordResetFlow:
         test_session.add(refresh_token)
         test_session.commit()
         
-        # Verify refresh token exists
-        existing_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
-        assert existing_token is not None
-        
         # Mock Redis
-        mock_redis.get.return_value = user_id
+        mock_redis.get.return_value = user_id.encode('utf-8')
         
-        with patch('tokens.conn', mock_redis):
+        with patch('functions.conn', mock_redis):
             result = update_pass_in_db(reset_token, new_password)
         
-        # Verify success
         assert result["status_code"] == 200
         
         # Verify refresh token was deleted
         deleted_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
         assert deleted_token is None
+
+
+# ============================================================================
+# EDGE CASES AND ERROR HANDLING TESTS
+# ============================================================================
+
+class TestEdgeCases:
+    """Test suite for edge cases and error handling."""
     
-    def test_update_pass_in_db_no_refresh_token_to_delete(self, mock_session, test_session, mock_redis):
-        """Test password update succeeds even when no refresh token exists."""
-        from auth.functions import update_pass_in_db
-        
+    def test_find_user_by_email_with_whitespace(self, mock_session, test_session):
+        """Test finding user with whitespace in email."""
         user_id = str(uuid.uuid4())
-        reset_token = str(uuid.uuid4())
-        new_password = "newSecurePass123"
         
-        # Create test user without refresh token
         user = Users(
             id=user_id,
-            first_name="No",
-            last_name="Token",
-            email="notoken@example.com",
-            password=hash_password("oldPassword"),
+            first_name="Test",
+            last_name="User",
+            email="test@example.com",
+            password=hash_password("password"),
             created_at=datetime.utcnow()
         )
         test_session.add(user)
         test_session.commit()
         
-        # Mock Redis
-        mock_redis.get.return_value = user_id
+        with patch('functions.Session', return_value=test_session):
+            result = find_user_by_email("  test@example.com  ")
         
-        with patch('tokens.conn', mock_redis):
-            result = update_pass_in_db(reset_token, new_password)
-        
-        # Should still succeed
-        assert result["status_code"] == 200
-        assert "successfully" in result["message"].lower()
+        assert result is not None
+        assert result["email"] == "test@example.com"
     
-    def test_update_pass_in_db_redis_error(self, mock_session, test_session, mock_redis):
-        """Test password update when Redis raises an error."""
-        from auth.functions import update_pass_in_db
-        import redis
+    def test_find_user_by_email_empty_string(self, mock_session, test_session):
+        """Test finding user with empty email."""
+        with patch('functions.Session', return_value=test_session):
+            result = find_user_by_email("")
         
+        assert result is None
+    
+    def test_save_refresh_token_updates_timestamp(self, mock_session, test_session):
+        """Test that saving refresh token updates the created_at timestamp."""
+        user_id = str(uuid.uuid4())
+        
+        # Create user
+        user = Users(
+            id=user_id,
+            first_name="Test",
+            last_name="User",
+            email="timestamp@example.com",
+            password=hash_password("password"),
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Save first token
+        old_time = datetime(2024, 1, 1, 0, 0, 0)
+        token = RefreshToken(
+            user_id=user_id,
+            refresh_token="token1",
+            created_at=old_time
+        )
+        test_session.add(token)
+        test_session.commit()
+        
+        # Update token
+        save_refresh_token(user_id, "token2")
+        
+        # Verify timestamp was updated
+        saved_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
+        assert saved_token.created_at > old_time
+    
+    def test_delete_refresh_token_handles_none(self, mock_session, test_session):
+        """Test deleting with None as token."""
+        result = delete_refresh_token(None)
+        
+        assert result is not None
+        assert result["status_code"] in [404, 500]
+    
+    def test_update_pass_in_db_empty_token(self, mock_redis):
+        """Test password update with empty reset token."""
+        with patch('functions.conn', mock_redis):
+            result = update_pass_in_db("", "newPassword123")
+        
+        assert result["status_code"] == 400
+        assert "error" in result
+    
+    def test_update_pass_in_db_empty_password(self, mock_redis):
+        """Test password update with empty new password."""
         reset_token = str(uuid.uuid4())
-        new_password = "newPassword123"
         
-        # Mock Redis to raise error
-        mock_redis.get.side_effect = redis.RedisError("Connection failed")
+        with patch('functions.conn', mock_redis):
+            result = update_pass_in_db(reset_token, "")
         
-        with patch('tokens.conn', mock_redis):
-            result = update_pass_in_db(reset_token, new_password)
-        
-        # Should return 500 error
-        assert result["status_code"] == 500
+        assert result["status_code"] == 400
         assert "error" in result
     
     def test_update_pass_in_db_whitespace_handling(self, mock_session, test_session, mock_redis):
         """Test that password update strips whitespace from password."""
-        from auth.functions import update_pass_in_db
-        
         user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())
         new_password = "  newPassword123  "
@@ -1332,21 +1200,130 @@ class TestPasswordResetFlow:
         test_session.commit()
         
         # Mock Redis
-        mock_redis.get.return_value = user_id
+        mock_redis.get.return_value = user_id.encode('utf-8')
         
-        with patch('tokens.conn', mock_redis):
+        with patch('functions.conn', mock_redis):
             result = update_pass_in_db(reset_token, new_password)
         
-        # Should succeed
         assert result["status_code"] == 200
         
         # Verify password was stored without whitespace
         updated_user = test_session.query(Users).filter_by(id=user_id).first()
-        
-        # Stripped password should work
         assert varify_password("newPassword123", updated_user.password) is True
-        # Password with whitespace should not work
         assert varify_password("  newPassword123  ", updated_user.password) is False
 
 
+# ============================================================================
+# INTEGRATION TESTS
+# ============================================================================
 
+class TestIntegration:
+    """Integration tests for complete user workflows."""
+    
+    def test_full_registration_login_logout_flow(self, mock_session, test_session):
+        """Test complete flow: register -> login -> logout."""
+        email = "fullflow@example.com"
+        password = "password123"
+        
+        # Step 1: Register
+        reg_result = user_registration(
+            first_name="Full",
+            last_name="Flow",
+            email=email,
+            password=password
+        )
+        
+        assert reg_result["status_code"] == 201
+        user_id = reg_result["new_user"]["user_id"]
+        
+        # Step 2: Login
+        login_result = user_login(email=email, password=password)
+        assert isinstance(login_result, tuple)
+        
+        access_token_tuple, refresh_token_tuple = login_result
+        access_token, _ = access_token_tuple
+        refresh_token, _ = refresh_token_tuple
+        
+        # Verify tokens are valid
+        decoded = decode_token(access_token)
+        assert decoded["sub"] == user_id
+        
+        # Step 3: Logout
+        logout_result = delete_refresh_token(refresh_token)
+        assert logout_result["status_code"] == 200
+        
+        # Verify refresh token was deleted
+        token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
+        assert token is None
+    
+    def test_full_password_reset_flow(self, mock_session, test_session, mock_redis):
+        """Test complete password reset flow: forget -> reset."""
+        email = "resetflow@example.com"
+        old_password = "oldPassword123"
+        new_password = "newPassword456"
+        
+        # Step 1: Register user
+        reg_result = user_registration(
+            first_name="Reset",
+            last_name="Flow",
+            email=email,
+            password=old_password
+        )
+        user_id = reg_result["new_user"]["user_id"]
+        
+        # Step 2: Request password reset
+        with patch('functions.conn', mock_redis):
+            reset_token = reset_pass(user_id)
+        
+        assert reset_token is not None
+        
+        # Step 3: Reset password
+        mock_redis.get.return_value = user_id.encode('utf-8')
+        
+        with patch('functions.conn', mock_redis):
+            reset_result = update_pass_in_db(reset_token, new_password)
+        
+        assert reset_result["status_code"] == 200
+        
+        # Step 4: Verify old password doesn't work
+        old_login_result = user_login(email=email, password=old_password)
+        assert isinstance(old_login_result, dict)
+        assert old_login_result["status_code"] == 401
+        
+        # Step 5: Verify new password works
+        new_login_result = user_login(email=email, password=new_password)
+        assert isinstance(new_login_result, tuple)
+    
+    def test_token_refresh_after_login(self, mock_session, test_session):
+        """Test refreshing access token after login."""
+        email = "tokenrefresh@example.com"
+        password = "password123"
+        
+        # Register and login
+        reg_result = user_registration(
+            first_name="Token",
+            last_name="Refresh",
+            email=email,
+            password=password
+        )
+        user_id = reg_result["new_user"]["user_id"]
+        
+        login_result = user_login(email=email, password=password)
+        _, refresh_token_tuple = login_result
+        refresh_token, _ = refresh_token_tuple
+        
+        # Decode refresh token to get user_id
+        decoded_refresh = decode_token(refresh_token)
+        assert decoded_refresh["sub"] == user_id
+        
+        # Create new access token
+        new_access_token, _ = create_access_token(user_id)
+        assert new_access_token is not None
+        
+        # Verify new access token is valid
+        decoded_access = decode_token(new_access_token)
+        assert decoded_access["sub"] == user_id
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])

@@ -173,6 +173,8 @@ def create_token(data:dict, expires_delta:timedelta):
 
 def create_access_token(user_id:str):
     user = find_user_by_id(user_id)
+    if not user:
+        return None, None
     user_email = user.get("email")
     time_delta = timedelta(minutes=TOKEN_TIMEOUT)
     access_token, expire_time = create_token(
@@ -354,6 +356,10 @@ def update_pass_in_db(reset_token: str, new_pass: str):
                 "status_code": 400,
                 "error": "Invalid or expired reset token"
             }
+        
+        # Redis returns bytes, decode to string
+        if isinstance(user_id, bytes):
+            user_id = user_id.decode('utf-8')
         
         # Hash the new password
         new_pass_hash = hash_password(new_pass.strip())

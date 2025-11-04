@@ -152,7 +152,7 @@ class TestConfigIntegration:
     def test_config_used_in_tokens_module(self):
         """Test that config settings can be used in tokens module."""
         from config import settings
-        from auth.functions import TOKEN_TIMEOUT
+        from functions import TOKEN_TIMEOUT
         
         # TOKEN_TIMEOUT should be a positive integer
         # (may not match settings if module was loaded with different env)

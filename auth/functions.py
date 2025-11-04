@@ -34,6 +34,7 @@ def user_registration(first_name:str,email:str, password:str,last_name:str=None)
     first_name = first_name.strip()
     last_name = last_name.strip() if last_name else None
     
+    #opt = create user_id, hashpass and data when it is confirmed that user does not already exists
     user_id = str(uuid.uuid4())
     hashed_password = hash_password(password)
     created_time = datetime.utcnow()

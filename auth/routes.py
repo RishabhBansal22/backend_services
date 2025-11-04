@@ -68,8 +68,8 @@ def login(response:Response,user:Login):
     # Successful login - unpack tokens
     try:
         access_token_tuple, refresh_token_tuple = result
-        access_token, access_exp = access_token_tuple
-        refresh_token, refresh_exp = refresh_token_tuple
+        access_token, _ = access_token_tuple
+        refresh_token, _ = refresh_token_tuple
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=500, detail="Invalid token format returned")
     

@@ -19,6 +19,7 @@ def redis_conn():
         )
         # Test the connection
         conn.ping()
+        print(conn.ping())
         return conn
     except redis.RedisError as e:
         print(f"Redis connection error: {e}")

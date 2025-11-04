@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from database import Base, Users, RefreshToken
-from tokens import (
+from auth.functions import (
     hash_password,
     varify_password,
     user_registration,
@@ -737,7 +737,7 @@ class TestCreateAccessToken:
     
     def test_create_access_token_success(self, mock_session, test_session):
         """Test creating an access token for a valid user."""
-        from tokens import create_access_token
+        from auth.functions import create_access_token
         
         user_id = str(uuid.uuid4())
         email = "accesstoken@example.com"
@@ -776,7 +776,7 @@ class TestCreateAccessToken:
     
     def test_create_access_token_with_nonexistent_user(self, mock_session, test_session):
         """Test creating access token with non-existent user."""
-        from tokens import create_access_token
+        from auth.functions import create_access_token
         
         fake_user_id = str(uuid.uuid4())
         
@@ -796,7 +796,7 @@ class TestTokenExpiration:
     
     def test_token_includes_expiration(self):
         """Test that created tokens include expiration claim."""
-        from tokens import create_token
+        from auth.functions import create_token
         
         data = {"user_id": "123", "email": "test@example.com"}
         expires_delta = timedelta(minutes=15)
@@ -809,7 +809,7 @@ class TestTokenExpiration:
     
     def test_token_expiration_matches_timedelta(self):
         """Test that token expiration matches the provided timedelta."""
-        from tokens import create_token
+        from auth.functions import create_token
         
         data = {"user_id": "123"}
         expires_delta = timedelta(minutes=30)
@@ -826,7 +826,7 @@ class TestTokenExpiration:
     
     def test_decode_token_with_zero_expiration(self):
         """Test decoding a token that expires immediately."""
-        from tokens import create_token
+        from auth.functions import create_token
         
         data = {"user_id": "123"}
         expires_delta = timedelta(seconds=0)
@@ -1024,7 +1024,7 @@ class TestPasswordResetFlow:
     
     def test_reset_pass_success(self, mock_redis):
         """Test successful generation of password reset token."""
-        from tokens import reset_pass
+        from auth.functions import reset_pass
         
         user_id = str(uuid.uuid4())
         
@@ -1055,7 +1055,7 @@ class TestPasswordResetFlow:
     
     def test_reset_pass_no_redis_connection(self):
         """Test reset_pass when Redis connection is not available."""
-        from tokens import reset_pass
+        from auth.functions import reset_pass
         
         user_id = str(uuid.uuid4())
         
@@ -1067,7 +1067,7 @@ class TestPasswordResetFlow:
     
     def test_reset_pass_redis_error(self, mock_redis):
         """Test reset_pass when Redis raises an error."""
-        from tokens import reset_pass
+        from auth.functions import reset_pass
         import redis
         
         user_id = str(uuid.uuid4())
@@ -1081,7 +1081,7 @@ class TestPasswordResetFlow:
     
     def test_reset_pass_generates_unique_tokens(self, mock_redis):
         """Test that reset_pass generates unique tokens for each call."""
-        from tokens import reset_pass
+        from auth.functions import reset_pass
         
         user_id = str(uuid.uuid4())
         
@@ -1094,7 +1094,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_success(self, mock_session, test_session, mock_redis):
         """Test successful password update with valid reset token."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())
@@ -1140,7 +1140,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_invalid_token(self, mock_session, test_session, mock_redis):
         """Test password update with invalid/expired reset token."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         reset_token = str(uuid.uuid4())
         new_password = "newPassword123"
@@ -1158,7 +1158,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_user_not_found(self, mock_session, test_session, mock_redis):
         """Test password update when user doesn't exist in database."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         fake_user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())
@@ -1177,7 +1177,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_no_redis_connection(self, mock_session, test_session):
         """Test password update when Redis connection is not available."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         reset_token = str(uuid.uuid4())
         new_password = "newPassword123"
@@ -1192,7 +1192,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_empty_token(self, mock_session, test_session, mock_redis):
         """Test password update with empty reset token."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         with patch('tokens.conn', mock_redis):
             result = update_pass_in_db("", "newPassword123")
@@ -1204,7 +1204,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_empty_password(self, mock_session, test_session, mock_redis):
         """Test password update with empty new password."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         reset_token = str(uuid.uuid4())
         
@@ -1218,7 +1218,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_deletes_refresh_token(self, mock_session, test_session, mock_redis):
         """Test that password update deletes existing refresh token."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())
@@ -1265,7 +1265,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_no_refresh_token_to_delete(self, mock_session, test_session, mock_redis):
         """Test password update succeeds even when no refresh token exists."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())
@@ -1295,7 +1295,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_redis_error(self, mock_session, test_session, mock_redis):
         """Test password update when Redis raises an error."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         import redis
         
         reset_token = str(uuid.uuid4())
@@ -1313,7 +1313,7 @@ class TestPasswordResetFlow:
     
     def test_update_pass_in_db_whitespace_handling(self, mock_session, test_session, mock_redis):
         """Test that password update strips whitespace from password."""
-        from tokens import update_pass_in_db
+        from auth.functions import update_pass_in_db
         
         user_id = str(uuid.uuid4())
         reset_token = str(uuid.uuid4())

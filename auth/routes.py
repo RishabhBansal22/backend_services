@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
-from tokens import user_registration, user_login, decode_token, JWTError, create_access_token, get_referesh_token, delete_refresh_token, reset_pass, update_pass_in_db
+from functions import user_registration, user_login, decode_token, JWTError, create_access_token, get_referesh_token, delete_refresh_token, reset_pass, update_pass_in_db
 from config import settings
 from datetime import datetime
 
@@ -260,7 +260,7 @@ def forgetpass(request: ForgetPass):
         raise HTTPException(status_code=400, detail="Email is required")
     
     try:
-        from tokens import find_user_by_email
+        from functions import find_user_by_email
         
         # Find user by email
         user = find_user_by_email(email)

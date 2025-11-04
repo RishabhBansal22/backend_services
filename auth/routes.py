@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
-from tokens import user_registration, user_login, decode_token, JWTError, create_access_token, get_referesh_token, delete_refresh_token
+from tokens import user_registration, user_login, decode_token, JWTError, create_access_token, get_referesh_token, delete_refresh_token, reset_pass, update_pass_in_db
 from config import settings
 from datetime import datetime
 
@@ -27,7 +27,12 @@ class Logout(BaseModel):
     access_token : str
     refresh_token : str
 
+class ForgetPass(BaseModel):
+    email : EmailStr
 
+class ResetPass(BaseModel):
+    token : str
+    new_pass : str = Field(...,min_length=6,max_length=20)
 
 
 @app.post("/register", status_code=201)
@@ -241,4 +246,118 @@ async def logout(request: Request):
             status_code=500,
             detail="Failed to logout"
         )
+    
+@app.post("/forgetpass")
+def forgetpass(request: ForgetPass):
+    """
+    Initiate password reset flow.
+    Validates user email and generates a reset token stored in Redis.
+    Returns the reset token (in production, this would be sent via email).
+    """
+    email = request.email
+    
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    
+    try:
+        from tokens import find_user_by_email
+        
+        # Find user by email
+        user = find_user_by_email(email)
+        if not user:
+            # Return generic message to prevent email enumeration
+            raise HTTPException(
+                status_code=404,
+                detail="If the email exists, a reset link will be sent"
+            )
+        
+        # Generate reset token
+        reset_token = reset_pass(user["user_id"])
+        
+        if not reset_token:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate reset token. Please try again later"
+            )
+        
+        # In production, send this token via email instead of returning it
+        return {
+            "reset_token": reset_token,
+            "message": f"Reset link sent to {email}",
+            "expires_in": "15 minutes"
+        }
+    
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        print(f"Error in forgetpass endpoint: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while processing your request"
+        )
+        
+
+@app.post("/resetpass")
+def reset_password(request: ResetPass):
+    """
+    Reset user password using a valid reset token.
+    Validates the token from Redis and updates the password in the database.
+    """
+    reset_token = request.token
+    new_pass = request.new_pass
+    
+    # Validate input
+    if not reset_token:
+        raise HTTPException(status_code=400, detail="Reset token is required")
+    
+    if not new_pass:
+        raise HTTPException(status_code=400, detail="New password is required")
+    
+    # Validate password length (should match the Field constraints)
+    if len(new_pass) < 6 or len(new_pass) > 20:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be between 6 and 20 characters"
+        )
+    
+    try:
+        # Update password in database
+        update = update_pass_in_db(reset_token, new_pass=new_pass)
+        
+        if update["status_code"] == 200:
+            return {
+                "status_code": 200,
+                "message": "Password updated successfully"
+            }
+        elif update["status_code"] == 400:
+            raise HTTPException(
+                status_code=400,
+                detail=update.get("error", "Invalid or expired reset token")
+            )
+        elif update["status_code"] == 404:
+            raise HTTPException(
+                status_code=404,
+                detail=update.get("error", "User not found")
+            )
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=update.get("error", "Failed to update password")
+            )
+    
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions
+    except Exception as e:
+        print(f"Error in resetpass endpoint: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while resetting your password"
+        )
+
+        
+
+
+
+
+
         

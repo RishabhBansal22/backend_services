@@ -1,9 +1,11 @@
 from config import settings
 from database import Session, Users, RefreshToken
+from redis_cache import conn
 import bcrypt
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
 import uuid
+import redis
 
 try:
     JWT_SECRET = settings.JWT_SECRET_KEY
@@ -283,7 +285,7 @@ def find_user_by_id(user_id: str):
         user = session.query(Users).filter(Users.id == user_id).first()
         if user:
             return {
-                "id": user.id,
+                "user_id": user.id,
                 "email": user.email,
                 "hashed_password": user.password,
                 "first_name": user.first_name,
@@ -293,7 +295,124 @@ def find_user_by_id(user_id: str):
     finally:
         session.close()
         
+def reset_pass(user_id):
+    """
+    Generate a password reset token and store it in Redis.
+    Returns the reset token string on success, None on failure.
+    Token expires in 15 minutes (900 seconds).
+    """
+    if not conn:
+        print("Redis connection not available")
+        return None
+    
+    try:
+        # Generate a unique reset token
+        reset_token = str(uuid.uuid4())
+        
+        # Store in Redis with user_id as value
+        # Key format: password_reset:<token>
+        redis_key = f"password_reset:{reset_token}"
+        
+        # Set token with 15 minute expiration (900 seconds)
+        conn.setex(redis_key, 900, user_id)
+        
+        print(f"Reset token created for user {user_id}")
+        return reset_token
+    
+    except redis.RedisError as e:
+        print(f"Redis error in reset_pass: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error in reset_pass: {e}")
+        return None
 
+
+def update_pass_in_db(reset_token: str, new_pass: str):
+    """
+    Update user password using a valid reset token.
+    Returns dict with status_code and message.
+    """
+    if not conn:
+        return {
+            "status_code": 500,
+            "error": "Redis connection not available"
+        }
+    
+    if not reset_token or not new_pass:
+        return {
+            "status_code": 400,
+            "error": "Reset token and new password are required"
+        }
+    
+    try:
+        # Retrieve user_id from Redis using the reset token
+        redis_key = f"password_reset:{reset_token}"
+        user_id = conn.get(redis_key)
+        
+        if not user_id:
+            return {
+                "status_code": 400,
+                "error": "Invalid or expired reset token"
+            }
+        
+        # Hash the new password
+        new_pass_hash = hash_password(new_pass.strip())
+        
+        with Session() as session:
+            try:
+                # Find user by id (not user_id)
+                user = session.query(Users).filter_by(id=user_id).first()
+                
+                if not user:
+                    return {
+                        "status_code": 404,
+                        "error": "User not found"
+                    }
+                
+                # Update password
+                user.password = new_pass_hash
+                session.commit()
+                
+                # Delete any existing refresh token for this user (invalidate all sessions)
+                try:
+                    existing_refresh_token = session.query(RefreshToken).filter_by(user_id=user_id).first()
+                    if existing_refresh_token:
+                        session.delete(existing_refresh_token)
+                        session.commit()
+                        print(f"Deleted existing refresh token for user {user_id}")
+                except Exception as token_delete_error:
+                    # Log but don't fail the password update if token deletion fails
+                    print(f"Warning: Failed to delete refresh token: {token_delete_error}")
+                
+                # Delete the reset token from Redis after successful password update
+                conn.delete(redis_key)
+                
+                print(f"Password updated successfully for user {user_id}")
+                return {
+                    "status_code": 200,
+                    "message": "Password updated successfully. All sessions have been logged out."
+                }
+            
+            except Exception as e:
+                session.rollback()
+                print(f"Database error in update_pass_in_db: {e}")
+                return {
+                    "status_code": 500,
+                    "error": "Failed to update password in database"
+                }
+    
+    except redis.RedisError as e:
+        print(f"Redis error in update_pass_in_db: {e}")
+        return {
+            "status_code": 500,
+            "error": "Redis error occurred"
+        }
+    except Exception as e:
+        print(f"Unexpected error in update_pass_in_db: {e}")
+        return {
+            "status_code": 500,
+            "error": "An unexpected error occurred"
+        }
 
 
 # if __name__ == "__main__":

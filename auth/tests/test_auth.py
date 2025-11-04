@@ -22,7 +22,9 @@ from tokens import (
     find_user_by_id,
     save_refresh_token,
     get_referesh_token,
-    delete_refresh_token
+    delete_refresh_token,
+    reset_pass,
+    update_pass_in_db
 )
 
 
@@ -628,7 +630,7 @@ class TestUserQuery:
             result = find_user_by_id(user_id)
         
         assert result is not None
-        assert result["id"] == user_id
+        assert result["user_id"] == user_id
         assert result["first_name"] == "Test"
         assert result["email"] == "test@example.com"
     
@@ -1006,3 +1008,345 @@ class TestDatabaseFunctions:
             assert hasattr(create_new_table, '__call__')
         except Exception:
             pass
+
+
+class TestPasswordResetFlow:
+    """Test suite for password reset functionality."""
+    
+    @pytest.fixture
+    def mock_redis(self):
+        """Mock Redis connection."""
+        mock_conn = MagicMock()
+        mock_conn.setex = MagicMock(return_value=True)
+        mock_conn.get = MagicMock(return_value=None)
+        mock_conn.delete = MagicMock(return_value=1)
+        return mock_conn
+    
+    def test_reset_pass_success(self, mock_redis):
+        """Test successful generation of password reset token."""
+        from tokens import reset_pass
+        
+        user_id = str(uuid.uuid4())
+        
+        with patch('tokens.conn', mock_redis):
+            reset_token = reset_pass(user_id)
+        
+        # Verify token was generated
+        assert reset_token is not None
+        assert isinstance(reset_token, str)
+        assert len(reset_token) > 0
+        
+        # Verify Redis was called correctly
+        mock_redis.setex.assert_called_once()
+        call_args = mock_redis.setex.call_args
+        
+        # Check that key format is correct
+        redis_key = call_args[0][0]
+        assert redis_key.startswith("password_reset:")
+        assert reset_token in redis_key
+        
+        # Check expiration time (should be 900 seconds / 15 minutes)
+        expiration = call_args[0][1]
+        assert expiration == 900
+        
+        # Check user_id is stored as value
+        stored_user_id = call_args[0][2]
+        assert stored_user_id == user_id
+    
+    def test_reset_pass_no_redis_connection(self):
+        """Test reset_pass when Redis connection is not available."""
+        from tokens import reset_pass
+        
+        user_id = str(uuid.uuid4())
+        
+        with patch('tokens.conn', None):
+            reset_token = reset_pass(user_id)
+        
+        # Should return None when Redis is unavailable
+        assert reset_token is None
+    
+    def test_reset_pass_redis_error(self, mock_redis):
+        """Test reset_pass when Redis raises an error."""
+        from tokens import reset_pass
+        import redis
+        
+        user_id = str(uuid.uuid4())
+        mock_redis.setex.side_effect = redis.RedisError("Connection failed")
+        
+        with patch('tokens.conn', mock_redis):
+            reset_token = reset_pass(user_id)
+        
+        # Should return None on Redis error
+        assert reset_token is None
+    
+    def test_reset_pass_generates_unique_tokens(self, mock_redis):
+        """Test that reset_pass generates unique tokens for each call."""
+        from tokens import reset_pass
+        
+        user_id = str(uuid.uuid4())
+        
+        with patch('tokens.conn', mock_redis):
+            token1 = reset_pass(user_id)
+            token2 = reset_pass(user_id)
+        
+        # Tokens should be different
+        assert token1 != token2
+    
+    def test_update_pass_in_db_success(self, mock_session, test_session, mock_redis):
+        """Test successful password update with valid reset token."""
+        from tokens import update_pass_in_db
+        
+        user_id = str(uuid.uuid4())
+        reset_token = str(uuid.uuid4())
+        new_password = "newSecurePass123"
+        
+        # Create test user
+        user = Users(
+            id=user_id,
+            first_name="Reset",
+            last_name="Test",
+            email="reset@example.com",
+            password=hash_password("oldPassword"),
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Mock Redis to return user_id for the reset token
+        mock_redis.get.return_value = user_id
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db(reset_token, new_password)
+        
+        # Verify success
+        assert result["status_code"] == 200
+        assert "message" in result
+        assert "successfully" in result["message"].lower()
+        
+        # Verify Redis was queried with correct key
+        redis_key = f"password_reset:{reset_token}"
+        mock_redis.get.assert_called_with(redis_key)
+        
+        # Verify Redis token was deleted
+        mock_redis.delete.assert_called_with(redis_key)
+        
+        # Verify password was updated in database
+        updated_user = test_session.query(Users).filter_by(id=user_id).first()
+        assert updated_user is not None
+        
+        # Verify new password works
+        assert varify_password(new_password, updated_user.password) is True
+        assert varify_password("oldPassword", updated_user.password) is False
+    
+    def test_update_pass_in_db_invalid_token(self, mock_session, test_session, mock_redis):
+        """Test password update with invalid/expired reset token."""
+        from tokens import update_pass_in_db
+        
+        reset_token = str(uuid.uuid4())
+        new_password = "newPassword123"
+        
+        # Mock Redis to return None (token not found/expired)
+        mock_redis.get.return_value = None
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db(reset_token, new_password)
+        
+        # Should return error
+        assert result["status_code"] == 400
+        assert "error" in result
+        assert "invalid" in result["error"].lower() or "expired" in result["error"].lower()
+    
+    def test_update_pass_in_db_user_not_found(self, mock_session, test_session, mock_redis):
+        """Test password update when user doesn't exist in database."""
+        from tokens import update_pass_in_db
+        
+        fake_user_id = str(uuid.uuid4())
+        reset_token = str(uuid.uuid4())
+        new_password = "newPassword123"
+        
+        # Mock Redis to return a user_id that doesn't exist
+        mock_redis.get.return_value = fake_user_id
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db(reset_token, new_password)
+        
+        # Should return 404 error
+        assert result["status_code"] == 404
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+    
+    def test_update_pass_in_db_no_redis_connection(self, mock_session, test_session):
+        """Test password update when Redis connection is not available."""
+        from tokens import update_pass_in_db
+        
+        reset_token = str(uuid.uuid4())
+        new_password = "newPassword123"
+        
+        with patch('tokens.conn', None):
+            result = update_pass_in_db(reset_token, new_password)
+        
+        # Should return 500 error
+        assert result["status_code"] == 500
+        assert "error" in result
+        assert "redis" in result["error"].lower()
+    
+    def test_update_pass_in_db_empty_token(self, mock_session, test_session, mock_redis):
+        """Test password update with empty reset token."""
+        from tokens import update_pass_in_db
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db("", "newPassword123")
+        
+        # Should return 400 error
+        assert result["status_code"] == 400
+        assert "error" in result
+        assert "required" in result["error"].lower()
+    
+    def test_update_pass_in_db_empty_password(self, mock_session, test_session, mock_redis):
+        """Test password update with empty new password."""
+        from tokens import update_pass_in_db
+        
+        reset_token = str(uuid.uuid4())
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db(reset_token, "")
+        
+        # Should return 400 error
+        assert result["status_code"] == 400
+        assert "error" in result
+        assert "required" in result["error"].lower()
+    
+    def test_update_pass_in_db_deletes_refresh_token(self, mock_session, test_session, mock_redis):
+        """Test that password update deletes existing refresh token."""
+        from tokens import update_pass_in_db
+        
+        user_id = str(uuid.uuid4())
+        reset_token = str(uuid.uuid4())
+        new_password = "newSecurePass123"
+        refresh_token_value = "existing_refresh_token"
+        
+        # Create test user
+        user = Users(
+            id=user_id,
+            first_name="Token",
+            last_name="Delete",
+            email="tokendelete@example.com",
+            password=hash_password("oldPassword"),
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Create existing refresh token
+        refresh_token = RefreshToken(
+            user_id=user_id,
+            refresh_token=refresh_token_value,
+            created_at=datetime.utcnow()
+        )
+        test_session.add(refresh_token)
+        test_session.commit()
+        
+        # Verify refresh token exists
+        existing_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
+        assert existing_token is not None
+        
+        # Mock Redis
+        mock_redis.get.return_value = user_id
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db(reset_token, new_password)
+        
+        # Verify success
+        assert result["status_code"] == 200
+        
+        # Verify refresh token was deleted
+        deleted_token = test_session.query(RefreshToken).filter_by(user_id=user_id).first()
+        assert deleted_token is None
+    
+    def test_update_pass_in_db_no_refresh_token_to_delete(self, mock_session, test_session, mock_redis):
+        """Test password update succeeds even when no refresh token exists."""
+        from tokens import update_pass_in_db
+        
+        user_id = str(uuid.uuid4())
+        reset_token = str(uuid.uuid4())
+        new_password = "newSecurePass123"
+        
+        # Create test user without refresh token
+        user = Users(
+            id=user_id,
+            first_name="No",
+            last_name="Token",
+            email="notoken@example.com",
+            password=hash_password("oldPassword"),
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Mock Redis
+        mock_redis.get.return_value = user_id
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db(reset_token, new_password)
+        
+        # Should still succeed
+        assert result["status_code"] == 200
+        assert "successfully" in result["message"].lower()
+    
+    def test_update_pass_in_db_redis_error(self, mock_session, test_session, mock_redis):
+        """Test password update when Redis raises an error."""
+        from tokens import update_pass_in_db
+        import redis
+        
+        reset_token = str(uuid.uuid4())
+        new_password = "newPassword123"
+        
+        # Mock Redis to raise error
+        mock_redis.get.side_effect = redis.RedisError("Connection failed")
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db(reset_token, new_password)
+        
+        # Should return 500 error
+        assert result["status_code"] == 500
+        assert "error" in result
+    
+    def test_update_pass_in_db_whitespace_handling(self, mock_session, test_session, mock_redis):
+        """Test that password update strips whitespace from password."""
+        from tokens import update_pass_in_db
+        
+        user_id = str(uuid.uuid4())
+        reset_token = str(uuid.uuid4())
+        new_password = "  newPassword123  "
+        
+        # Create test user
+        user = Users(
+            id=user_id,
+            first_name="Whitespace",
+            last_name="Test",
+            email="whitespace@example.com",
+            password=hash_password("oldPassword"),
+            created_at=datetime.utcnow()
+        )
+        test_session.add(user)
+        test_session.commit()
+        
+        # Mock Redis
+        mock_redis.get.return_value = user_id
+        
+        with patch('tokens.conn', mock_redis):
+            result = update_pass_in_db(reset_token, new_password)
+        
+        # Should succeed
+        assert result["status_code"] == 200
+        
+        # Verify password was stored without whitespace
+        updated_user = test_session.query(Users).filter_by(id=user_id).first()
+        
+        # Stripped password should work
+        assert varify_password("newPassword123", updated_user.password) is True
+        # Password with whitespace should not work
+        assert varify_password("  newPassword123  ", updated_user.password) is False
+
+
+

@@ -40,6 +40,8 @@ jobs:
         USER: testuser
         PASSWORD: testpass
         DATABASE: testdb
+        REDIS_HOST: localhost
+        REDIS_PORT: 6379
       run: |
         uv run pytest auth/tests/ -v --cov=auth --cov-report=term-missing
     
@@ -54,6 +56,8 @@ jobs:
         USER: testuser
         PASSWORD: testpass
         DATABASE: testdb
+        REDIS_HOST: localhost
+        REDIS_PORT: 6379
       run: |
         uv run pytest auth/tests/ --cov=auth --cov-report=xml
     

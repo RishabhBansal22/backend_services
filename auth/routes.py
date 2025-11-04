@@ -29,6 +29,7 @@ class Logout(BaseModel):
 
 
 
+
 @app.post("/register", status_code=201)
 def new_user(user:NewUser):
     first_name = user.first_name

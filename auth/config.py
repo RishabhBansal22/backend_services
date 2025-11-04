@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     PASSWORD:str
     DATABASE:str 
 
+    #redis
+    REDIS_HOST:str
+    REDIS_PORT:int
+
     model_config = SettingsConfigDict(env_file=r"D:\AI_coding\MICROSERVICE_TUTORIAL\auth\.env")
 
 

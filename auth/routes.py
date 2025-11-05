@@ -31,7 +31,7 @@ class ForgetPass(BaseModel):
     email : EmailStr
 
 class ResetPass(BaseModel):
-    token : str
+    token : str = Field(...)
     new_pass : str = Field(...,min_length=6,max_length=20)
 
 
@@ -254,7 +254,7 @@ def forgetpass(request: ForgetPass):
     Validates user email and generates a reset token stored in Redis.
     Returns the reset token (in production, this would be sent via email).
     """
-    email = request.email
+    email : str = request.email
     
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
@@ -263,7 +263,7 @@ def forgetpass(request: ForgetPass):
         from functions import find_user_by_email
         
         # Find user by email
-        user = find_user_by_email(email)
+        user = find_user_by_email(email.strip())
         if not user:
             # Return generic message to prevent email enumeration
             raise HTTPException(
@@ -272,7 +272,7 @@ def forgetpass(request: ForgetPass):
             )
         
         # Generate reset token
-        reset_token = reset_pass(user["user_id"])
+        reset_token = reset_pass(user["user_id"],email.strip())
         
         if not reset_token:
             raise HTTPException(

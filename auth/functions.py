@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from jose import jwt, JWTError
 import uuid
 import redis
+import json
 
 try:
     JWT_SECRET = settings.JWT_SECRET_KEY
@@ -298,7 +299,7 @@ def find_user_by_id(user_id: str):
     finally:
         session.close()
         
-def reset_pass(user_id):
+def reset_pass(user_id,email):
     """
     Generate a password reset token and store it in Redis.
     Returns the reset token string on success, None on failure.
@@ -317,7 +318,26 @@ def reset_pass(user_id):
         redis_key = f"password_reset:{reset_token}"
         
         # Set token with 15 minute expiration (900 seconds)
-        conn.setex(redis_key, 900, user_id)
+        exp_second = 900
+        conn.setex(redis_key, exp_second, user_id)
+
+        # # send reset url to mail service by redis pub/sub
+        # reset_link = f"https://yourfrontend.com/reset-password?reset_token={reset_token}"
+        payload = {
+            "email": email,
+            "reset_token":reset_token,
+            "expires_in":exp_second
+        }
+        try:
+            sub = conn.publish(channel="email:reset_pass",message=json.dumps(payload))
+            if int(sub) > 0:
+                print("message sent to email service")
+            else:
+                print("no active redis subscribers found")
+
+        except redis.PubSubError as e:
+            print(e)
+        
         
         print(f"Reset token created for user {user_id}")
         return reset_token
@@ -423,11 +443,5 @@ def update_pass_in_db(reset_token: str, new_pass: str):
 
 
 # if __name__ == "__main__":
-#     user_data = find_user_by_email("test1@gmail.com")
-#     token, exp_time = create_token(user_data,timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
-#     print("ACCESS_TOKEN :",token)
-#     print("EXP_TIME",exp_time)
-#     print("========================")
-#     decode = decode_token(token)
-#     print("DECODE : ",decode)
+#     reset_pass(user_id=101,email="rishabhxai@gmail.com")
     

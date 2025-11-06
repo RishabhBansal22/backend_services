@@ -28,7 +28,6 @@ def redis_conn():
         print(f"Unexpected error connecting to Redis: {e}")
         raise Exception(f"Failed to connect to Redis: {e}")
 
-# Initialize the global connection
 try:
     conn = redis_conn()
     print("Redis connection established successfully")

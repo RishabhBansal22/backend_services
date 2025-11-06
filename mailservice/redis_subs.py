@@ -42,7 +42,7 @@ def forget_pass_listner(test_flow=False):
     # Subscribe to the channel that auth service publishes to
     pubsub.subscribe("email:reset_pass")
     
-    print("📨 Email service listening on channel: email:reset_pass")
+    print("Email service listening on channel: email:reset_pass")
     
     # Continuously listen for messages
     for message in pubsub.listen():
@@ -62,23 +62,23 @@ def forget_pass_listner(test_flow=False):
                 
                 # Send the email
                 result = smtp_send_mail(email, reset_token, expire)
-                print(f"✅ Email sent: {result}")
+                print(f"Email sent: {result}")
 
                 if test_flow:
                     req = test_passreset_flow(reset_token)
                     print(req)
                 
             except json.JSONDecodeError as e:
-                print(f"❌ JSON decode error: {e}")
+                print(f"JSON decode error: {e}")
             except Exception as e:
-                print(f"❌ Error processing message: {e}")
+                print(f"Error processing message: {e}")
  
 
 if __name__ == "__main__":
-    print("🚀 Starting email service...")
+    print("Starting email service...")
     try:
         forget_pass_listner(test_flow=False)
     except KeyboardInterrupt:
-        print("\n👋 Email service stopped by user")
+        print("\nEmail service stopped by user")
     except Exception as e:
-        print(f"❌ Email service crashed: {e}")
+        print(f"Email service crashed: {e}")

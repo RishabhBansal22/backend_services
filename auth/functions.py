@@ -28,10 +28,8 @@ def varify_password(raw_pass:str, hash_pass:str) -> bool:
 
 
 def user_registration(first_name:str,email:str, password:str,last_name:str=None):
-    # Normalize email to lowercase and strip whitespace
-    email = email.lower().strip()
     
-    # Strip whitespace from names
+    email = email.lower().strip()
     first_name = first_name.strip()
     last_name = last_name.strip() if last_name else None
     
@@ -59,11 +57,9 @@ def user_registration(first_name:str,email:str, password:str,last_name:str=None)
                     "status_code": 409
                 }
             
-            
             session.add(user)
             session.commit()
             
-            # Return the user data directly without another DB query
             return {
                 "new_user": {
                     "user_id": user_id,
@@ -89,7 +85,6 @@ def user_registration(first_name:str,email:str, password:str,last_name:str=None)
 
 def user_login(email:str,password:str):
     try:
-        # Normalize email
         email = email.lower().strip()
         
         user_data = find_user_by_email(email)
@@ -99,7 +94,6 @@ def user_login(email:str,password:str):
                 "status_code": 401
             }
         
-        # Verify password
         verify = varify_password(raw_pass=password, hash_pass=user_data["hashed_pass"])
         if not verify:
             return {
@@ -262,7 +256,7 @@ def delete_refresh_token(refresh_token):
 def find_user_by_email(email:str) -> dict:
     session = Session()
     try:
-        # Normalize email to lowercase and strip whitespace for case-insensitive comparison
+        
         user_data_obj = session.query(Users).filter_by(email=email.lower().strip()).first()
         
         if user_data_obj is None:
@@ -310,19 +304,12 @@ def reset_pass(user_id,email):
         return None
     
     try:
-        # Generate a unique reset token
+        
         reset_token = str(uuid.uuid4())
-        
-        # Store in Redis with user_id as value
-        # Key format: password_reset:<token>
         redis_key = f"password_reset:{reset_token}"
-        
-        # Set token with 15 minute expiration (900 seconds)
         exp_second = 900
         conn.setex(redis_key, exp_second, user_id)
 
-        # # send reset url to mail service by redis pub/sub
-        # reset_link = f"https://yourfrontend.com/reset-password?reset_token={reset_token}"
         payload = {
             "email": email,
             "reset_token":reset_token,
@@ -382,12 +369,10 @@ def update_pass_in_db(reset_token: str, new_pass: str):
         if isinstance(user_id, bytes):
             user_id = user_id.decode('utf-8')
         
-        # Hash the new password
         new_pass_hash = hash_password(new_pass.strip())
-        
         with Session() as session:
             try:
-                # Find user by id (not user_id)
+                
                 user = session.query(Users).filter_by(id=user_id).first()
                 
                 if not user:
@@ -400,7 +385,7 @@ def update_pass_in_db(reset_token: str, new_pass: str):
                 user.password = new_pass_hash
                 session.commit()
                 
-                # Delete any existing refresh token for this user (invalidate all sessions)
+                
                 try:
                     existing_refresh_token = session.query(RefreshToken).filter_by(user_id=user_id).first()
                     if existing_refresh_token:
@@ -408,7 +393,7 @@ def update_pass_in_db(reset_token: str, new_pass: str):
                         session.commit()
                         print(f"Deleted existing refresh token for user {user_id}")
                 except Exception as token_delete_error:
-                    # Log but don't fail the password update if token deletion fails
+                    # Log but don't fail 
                     print(f"Warning: Failed to delete refresh token: {token_delete_error}")
                 
                 # Delete the reset token from Redis after successful password update

@@ -22,7 +22,6 @@ class Login(BaseModel):
 class RefreshToken(BaseModel):
     refresh_token : Optional[str] = None
 
-
 class Logout(BaseModel):
     access_token : str
     refresh_token : str
@@ -64,8 +63,7 @@ def login(response:Response,user:Login):
         status_code = result.get("status_code", 500)
         error_message = result.get("error", "Login failed")
         raise HTTPException(status_code=status_code, detail=error_message)
-    
-    # Successful login - unpack tokens
+   
     try:
         access_token_tuple, refresh_token_tuple = result
         access_token, _ = access_token_tuple
@@ -108,13 +106,13 @@ def login(response:Response,user:Login):
 @app.post("/refresh")
 async def refresh_token(response: Response, request: Request):
     
-    # Get refresh token from cookie first
+    
     refresh_token = request.cookies.get("refresh_token")
     
-    # If not in cookie, try to parse from request body
+    
     if not refresh_token:
         try:
-            # Parse body as RefreshToken model for validation
+           
             body = await request.json()
             token_data = RefreshToken(**body)
             refresh_token = token_data.refresh_token
@@ -133,12 +131,10 @@ async def refresh_token(response: Response, request: Request):
         if not payload:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
         
-        # Get user_id from "sub" field (not "user_id")
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token payload")
         
-        # Verify token type
         token_type = payload.get("type")
         if token_type != "refresh_token":
             raise HTTPException(status_code=401, detail="Invalid token type")
@@ -148,12 +144,10 @@ async def refresh_token(response: Response, request: Request):
         if not exp or exp < datetime.utcnow().timestamp():
             raise HTTPException(status_code=401, detail="Refresh token expired")
         
-        # Validate refresh token against database (for revocation/logout support)
         db_token = get_referesh_token(user_id=user_id)
         if not db_token or db_token.refresh_token != refresh_token:
             raise HTTPException(status_code=401, detail="Refresh token not found or revoked")
         
-        # Create new access token
         access_token, expire_time = create_access_token(user_id=user_id)
         if not access_token:
             raise HTTPException(status_code=500, detail="Failed to create access token")
@@ -167,7 +161,6 @@ async def refresh_token(response: Response, request: Request):
             "expires_in": expires_in
         }
         
-        # If refresh token came from cookie, set access token in cookie too
         if request.cookies.get("refresh_token"):
             json_response = JSONResponse(content=json_content)
             json_response.set_cookie(
@@ -193,10 +186,8 @@ async def refresh_token(response: Response, request: Request):
 
 @app.post("/logout")
 async def logout(request: Request):
-    # Try to get refresh token from cookies first
     refresh_token = request.cookies.get("refresh_token")
     
-    # If not in cookies, try request body
     if not refresh_token:
         try:
             body = await request.json()
@@ -205,7 +196,6 @@ async def logout(request: Request):
         except Exception:
             pass  # Body parsing failed, refresh_token remains None
     
-    # If still no refresh token, return error
     if not refresh_token:
         raise HTTPException(
             status_code=400,
@@ -262,16 +252,15 @@ def forgetpass(request: ForgetPass):
     try:
         from functions import find_user_by_email
         
-        # Find user by email
+        
         user = find_user_by_email(email.strip())
         if not user:
-            # Return generic message to prevent email enumeration
             raise HTTPException(
                 status_code=404,
                 detail="If the email exists, a reset link will be sent"
             )
         
-        # Generate reset token
+        
         reset_token = reset_pass(user["user_id"],email.strip())
         
         if not reset_token:
@@ -306,14 +295,13 @@ def reset_password(request: ResetPass):
     reset_token = request.token
     new_pass = request.new_pass
     
-    # Validate input
+ 
     if not reset_token:
         raise HTTPException(status_code=400, detail="Reset token is required")
     
     if not new_pass:
         raise HTTPException(status_code=400, detail="New password is required")
-    
-    # Validate password length (should match the Field constraints)
+  
     if len(new_pass) < 6 or len(new_pass) > 20:
         raise HTTPException(
             status_code=400,
@@ -321,7 +309,6 @@ def reset_password(request: ResetPass):
         )
     
     try:
-        # Update password in database
         update = update_pass_in_db(reset_token, new_pass=new_pass)
         
         if update["status_code"] == 200:

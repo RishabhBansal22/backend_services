@@ -1,15 +1,20 @@
 import random
 import requests
+from config import settings
 
 
-def smtp_send_mail(email,token,exp):
-    try:
-        url = "https://{host}/reset_password?reset_token={token}"
-        return {
-            "message":f"mail to {email} with {token} and expire in {exp} sent successfully"
-        }
-    except Exception as e:
-        return e
+def smtp_send_mail(email:str,token:str,exp:str,test_mode=True):
+    if test_mode:
+        try:
+            url = "https://{host}/reset_password?reset_token={token}"
+            return {
+                "message":f"mail to {email} with {token} and expire in {exp} sent successfully"
+            }
+        except Exception as e:
+            return e
+    else:
+        pass
+
 
 def test_passreset_flow(token:str):
     

@@ -8,6 +8,15 @@ from datetime import datetime
 
 app = FastAPI()
 
+@app.get("/health")
+def health():
+    try:
+        response = JSONResponse(content="service is running", status_code=200)
+        return response
+    
+    except HTTPException as e:
+        return e
+
 class NewUser(BaseModel):
     first_name : str = Field(...,min_length=3)
     last_name : Optional[str] = None

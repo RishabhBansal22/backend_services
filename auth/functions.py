@@ -428,5 +428,5 @@ def update_pass_in_db(reset_token: str, new_pass: str):
 
 
 # if __name__ == "__main__":
-#     reset_pass(user_id=101,email="rishabhxai@gmail.com")
+#     reset_pass(user_id=101,email="rishabh@gmail.com")
     
